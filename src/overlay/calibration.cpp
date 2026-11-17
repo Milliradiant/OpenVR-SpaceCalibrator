@@ -342,14 +342,20 @@ CalibrationError TrackingSystemCalibration::computeCalibrationOneshot(double cur
         eCalibrationError = CalibrationError::WorseAxisVarianceThanLast;
     }
 
-    if (eCalibrationError == CalibrationError::None && (isRelativeCalibration && !makeCalibrationLocal(computedRotation, computedTranslation))) {
-        eCalibrationError = CalibrationError::BadRelativeCalibration;
+    // a relative calibration is stored, and read by the driver, in the reference device's space. so everything that is about to be applied has to
+    // be converted, including a forced calibration that failed a check above. one that cannot be converted is never applied, forced or not
+    bool bIsInStoredSpace = true;
+    if (isRelativeCalibration && (eCalibrationError == CalibrationError::None || bForceCalibration)) {
+        bIsInStoredSpace = makeCalibrationLocal(computedRotation, computedTranslation);
+        if (!bIsInStoredSpace && eCalibrationError == CalibrationError::None) {
+            eCalibrationError = CalibrationError::BadRelativeCalibration;
+        }
     }
 
     // @TODO: calibration metrics
     auto endTime = std::chrono::high_resolution_clock::now();
     double elapsedMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-    bool bApplied = (eCalibrationError == CalibrationError::None || bForceCalibration);
+    bool bApplied = bIsInStoredSpace && (eCalibrationError == CalibrationError::None || bForceCalibration);
 
     errorMetrics.rmsError.push(currentTime, k_METRIC_HISTORY_TIMESPAN, rmsError);
     errorMetrics.axisIndependence.push(currentTime, k_METRIC_HISTORY_TIMESPAN, axisVariance);
@@ -359,7 +365,7 @@ CalibrationError TrackingSystemCalibration::computeCalibrationOneshot(double cur
     errorMetrics.posOffset_rawComputed.push(currentTime, k_METRIC_HISTORY_TIMESPAN, computedTranslation);
     errorMetrics.posOffset_currentCal.push(currentTime, k_METRIC_HISTORY_TIMESPAN, bApplied ? computedTranslation : calibratedTranslation);
 
-    if (eCalibrationError == CalibrationError::None || bForceCalibration) {
+    if (bApplied) {
         calibrationError = bForceCalibration ? CalibrationError::None : eCalibrationError;
         calibratedRotation = computedRotation;
         calibratedTranslation = computedTranslation;
@@ -415,6 +421,46 @@ bool TrackingSystemCalibration::makeCalibrationLocal(Eigen::Quaterniond& rotatio
         return true;
     }
     return false;
+}
+
+bool TrackingSystemCalibration::setRelativeCalibration(bool bRelative)
+{
+    if (bRelative == isRelativeCalibration) {
+        return true;
+    }
+
+    // the calibration is stored in the space isRelativeCalibration names, and apply(), the metrics and the saved profile all read it that way.
+    // so the stored calibration has to move to the other space in the same step as the flag. any sample of the two devices will do, as the
+    // target is fixed to the reference in relative calibration
+    Sample_t sample = {};
+    if (devicesAreValid()) {
+        sample = collectSample(0.0);
+    }
+    if (!sample.isPoseValid && !m_samples.empty()) {
+        sample = m_samples.back();
+    }
+    if (!sample.isPoseValid) {
+        LOG_CALIB_WARN("Cannot switch relative calibration {}: no valid pose for the reference and target devices", bRelative ? "on" : "off");
+        return false;
+    }
+
+    Eigen::Affine3d storedCalib = Eigen::Translation3d(calibratedTranslation) * calibratedRotation;
+    Eigen::Affine3d refPose = Eigen::Translation3d(sample.reference.trans) * sample.reference.rot;
+    Eigen::Affine3d targetPose = Eigen::Translation3d(sample.target.trans) * sample.target.rot;
+
+    // C_L = H^-1 * C * T, and back: C = H * C_L * T^-1
+    Eigen::Affine3d convertedCalib = bRelative
+        ? refPose.inverse() * storedCalib * targetPose
+        : refPose * storedCalib * targetPose.inverse();
+
+    calibratedRotation = Eigen::Quaterniond(convertedCalib.rotation()).normalized();
+    calibratedTranslation = convertedCalib.translation();
+    isRelativeCalibration = bRelative;
+
+    LOG_CALIB_INFO("Relative calibration switched {}, stored calibration converted to {} space", bRelative ? "on" : "off", bRelative ? "local" : "world");
+    apply();
+    CalibrationManager::getInstance()->saveConfig();
+    return true;
 }
 
 Pose_t TrackingSystemCalibration::applyTransform(const Pose_t& originalPose, const Eigen::AffineCompact3d& transform) const

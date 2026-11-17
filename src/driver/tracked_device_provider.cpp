@@ -242,6 +242,12 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
 
     auto& transform = m_transforms[unWhichDevice];
 
+    // the cached calibration belongs to the relative session it was blended in. drop it once that session ends, so the next one
+    // starts from its own first calibration instead of blending its way out of a stale one
+    if (!transform.enabled() || !transform.relativeCoordSystem()) {
+        m_cachedCalibrations[unWhichDevice].hasCalibration = false;
+    }
+
     if (transform.hideContinuousTracker()) {
         newPose.vecPosition[0] = -newPose.vecWorldFromDriverTranslation[0];
         newPose.vecPosition[1] = -newPose.vecWorldFromDriverTranslation[1] + 9001; // put it 9001m above the origin

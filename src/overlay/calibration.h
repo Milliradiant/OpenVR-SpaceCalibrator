@@ -160,6 +160,7 @@ public:
     void calibrationTick(const double currentTime);
     void resetCalibrationForDevice(const CalibrationDevice& device); // resets the given device's pose to the raw pose
     void apply(); // applies the calibration to the VR runtime
+    bool setRelativeCalibration(bool bRelative); // switches relative calibration on or off, converting the stored calibration with it. false if it could not be converted
 
     // finds the device id given props, if and only if device id is invalid
     void assignTarget(CalibrationDevice& device);

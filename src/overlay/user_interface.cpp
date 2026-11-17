@@ -393,8 +393,9 @@ inline void buildCalibrationCommonControls(spacecal::TrackingSystemCalibration& 
         }
 
         if (g_state.bIsSettingsAdvanced) {
-            if (ImGui::CheckboxWithDescription(LOCALE_GET("continuous_relative_calibration").c_str(), &calibration.isRelativeCalibration, LOCALE_GET("continuous_relative_calibration_description").c_str())) {
-                calibration.forceNextCalibration();
+            bool bRelativeCalibration = calibration.isRelativeCalibration;
+            if (ImGui::CheckboxWithDescription(LOCALE_GET("continuous_relative_calibration").c_str(), &bRelativeCalibration, LOCALE_GET("continuous_relative_calibration_description").c_str())) {
+                calibration.setRelativeCalibration(bRelativeCalibration);
             }
         }
     }
