@@ -19,6 +19,7 @@ struct ReplayOptions {
     int samples = 100; // the overlay's calibration speed: 100 (fast), 250 (slow) or 500 (very slow) samples a calibration
     double tickRate = 90.0; // how often the overlay's loop comes round, a second. it samples 20 times a second within that
     bool verbose = false; // print what the calibration logs
+    std::vector<double> mountState; // what the profile holds of the mount estimator from the sessions before, if anything
 };
 
 struct ReplayResult {
@@ -27,6 +28,7 @@ struct ReplayResult {
     std::vector<CalibrationEvent> events;
     size_t computed = 0;
     std::map<std::string, size_t> rejections; // the overlay's own reason -> how many calibrations it turned down for it
+    std::vector<double> mountState; // what the profile holds of the mount estimator at the session's end
 };
 
 // Runs the overlay's own calibration (src/overlay/calibration.cpp, unchanged, built into the bench) over a recording as a session

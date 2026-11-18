@@ -178,6 +178,10 @@ namespace spacecal {
 
                     TrackingDevice reference_device;
                     TrackingDevice target_device;
+
+                    // what the mount estimator has added up of how the target device moves with the reference device, for
+                    // these two devices (MountEstimator::state). empty until there is any
+                    std::vector<double> mount_estimate;
                 };
 
                 struct BaseStationManagementData {

@@ -24,6 +24,9 @@ struct ReferenceOptions {
     double jumpThreshold = 0.03; // a step of the world calibration this large at the feet, between the 2 s before and after, is a jump
     double feetBelowTarget = 1.5; // where an error is judged: this far below the target device, metres
     double feetSpread = 0.5; // and this far to each side of that point: a calibration turned about the vertical moves nothing right under it
+    // judge with this mount in the place of the one the session's own motions give: how steady the world calibration is with
+    // it says how good it is, whatever the session's own fit
+    const Pose* givenMount = nullptr;
     bool usePoseTimeOffset = false; // take a pose to be of the time the driver said (its poseTimeOffset), not of when it came in
 };
 

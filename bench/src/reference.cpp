@@ -368,6 +368,9 @@ Reference solveReference(const Session& session, const ReferenceOptions& options
         return result;
     }
     const double middle = 0.5 * (begin + duration);
+    if (options.givenMount) {
+        result.mount.mount = *options.givenMount;
+    }
     result.firstHalf = fitMount(motionPairs(reference, target, result.timeOffset, options, begin, middle));
     result.secondHalf = fitMount(motionPairs(reference, target, result.timeOffset, options, middle, duration));
 

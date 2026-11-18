@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ipc_client.h"
+#include "mount_estimator.h"
 #include "openvr.h"
 #include "protocol.h"
 #include "time_series.h"
@@ -31,6 +32,18 @@ constexpr double k_TRANSLATION_MIN_MOTION_THRESHOLD = 0.01; // @TODO: fine tune
 constexpr double k_TRANSLATION_MAX_AMPLIFIED_NOISE_FACTOR = 3.0; // @TODO: fine tune
 constexpr size_t k_MIN_DELTA_SAMPLE_COUNT = 200;
 constexpr size_t k_MIN_SAMPLES_TO_AVERAGE_LOCAL = 20; // below this, switching relative calibration on converts with the current pose alone
+
+// the mount estimator
+constexpr double k_MOUNT_MOTION_SPAN_SEC = 0.3; // a motion is taken between two moments this far apart
+constexpr double k_MOUNT_MOTION_SPAN_TOLERANCE_SEC = 0.08;
+constexpr double k_MOUNT_APPLY_INTERVAL_SEC = 1.0; // the mount in force follows the estimate at most this often
+constexpr double k_MOUNT_APPLY_MIN_ANGLE_RAD = 0.02 * (EIGEN_PI / 180.0); // and only when it has moved by this much
+constexpr double k_MOUNT_APPLY_MIN_DISTANCE_METERS = 0.0002;
+constexpr double k_MOUNT_SAVE_INTERVAL_SEC = 30.0; // what the estimator has added up goes to the profile this often
+// How many motions the estimator must have added up before its mount is the one in force. Over recorded sessions its mount is
+// about as good as one batch calibration's by then (some 0.3 degrees) and goes on getting better, where a batch's does not. A
+// session that begins with a profile's estimate has them from its first moment.
+constexpr double k_MOUNT_MIN_MOTIONS_IN_FORCE = 1000.0;
 
 constexpr double k_ROTATION_VARIANCE_MIN_TOTAL_ROTATION = 3.0; // sum of squared radians vs noise
 constexpr int k_ROTATION_VARIANCE_SECOND_AXIS_RATIO = 3; // middle eigen value vs total
@@ -224,6 +237,12 @@ public:
     // the calibrated pose
     Eigen::Quaterniond calibratedRotation = Eigen::Quaterniond::Identity();
     Eigen::Vector3d calibratedTranslation = Eigen::Vector3d::Zero();
+
+    // Where the target device sits on the reference device, added up from how the two move together for as long as a continuous
+    // calibration runs, in either mode, and kept in the profile from one session to the next. Under relative calibration it is the
+    // calibration in force once it has enough to go by: a batch of samples then has nothing to add to it.
+    MountEstimator mountEstimator;
+    std::string mountEstimateDevices; // the reference's and the target's serial numbers it was added up for
     double calibratedScale = 1.0;
 
     double wantedUpdateInterval = 1.0;
@@ -231,7 +250,7 @@ public:
     CalibrationErrorMetrics errorMetrics = {};
 
 private:
-    Sample_t collectSample(double currentTime) const;
+    Sample_t collectSample(double currentTime, bool bLogUntracked = true) const;
     inline size_t getSampleCount() const { return (size_t)calibrationSpeed; }
     [[nodiscard]] inline size_t getMaxSampleHistorySize() const { return (size_t)calibrationSpeed * 5; }
 
@@ -284,6 +303,15 @@ private:
     double m_lastTick = 0.0;
     double m_lastScan = 0.0;
     double m_lastLiveMetricTime = 0.0;
+
+    void updateMountEstimate(double currentTime);
+    // the estimator's mount is good enough to be the relative calibration in force
+    [[nodiscard]] bool isMountSettled() const { return mountEstimator.ready() && mountEstimator.weight() >= k_MOUNT_MIN_MOTIONS_IN_FORCE; }
+    std::deque<Sample_t> m_mountSamples; // the last moments' poses of the two devices, to take motions between
+    bool m_isMountInForce = false; // the calibration in force is the estimator's mount
+    bool m_isMountUnsaved = false;
+    double m_lastMountApplyTime = 0.0;
+    double m_lastMountSaveTime = 0.0;
 
     float m_xTargetPrev = 0.0f;
     float m_yTargetPrev = 0.0f;

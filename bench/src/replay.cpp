@@ -244,6 +244,7 @@ ReplayResult replayOverlay(const Session& session, const ReplayOptions& options)
     };
     calibration.reference_device = deviceOf(session.referenceIndex);
     calibration.target_device = deviceOf(session.targetIndex);
+    calibration.mount_estimate = options.mountState;
     configuration.getConfiguration()->calibrations = { calibration };
 
     static spacecal::CalibrationManager manager;
@@ -257,6 +258,12 @@ ReplayResult replayOverlay(const Session& session, const ReplayOptions& options)
         g_replay.time = time;
         // the overlay's clock starts at its own launch. a second in, so that no time it keeps is zero
         manager.calibrationTick(time - begin + 1.0);
+    }
+
+    // what the overlay would leave in its profile at the session's end
+    manager.saveConfig();
+    if (!configuration.getConfiguration()->calibrations.empty()) {
+        result.mountState = configuration.getConfiguration()->calibrations.front().mount_estimate;
     }
 
     g_replay.result = nullptr;

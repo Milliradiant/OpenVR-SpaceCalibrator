@@ -737,6 +737,74 @@ bool TrackingSystemCalibration::validateCalibration(const Eigen::Quaterniond& ro
     return ok;
 }
 
+void TrackingSystemCalibration::updateMountEstimate(const double currentTime)
+{
+    // the estimate is of one device on one other
+    const std::string devices = referenceDevice.deviceSerialNumber + "\n" + targetDevice.deviceSerialNumber;
+    if (devices != mountEstimateDevices) {
+        mountEstimator.reset();
+        mountEstimateDevices = devices;
+        m_mountSamples.clear();
+    }
+
+    // the two devices' motion from a moment ago to now, each in its own frame
+    const Sample_t sample = collectSample(currentTime, false);
+    if (!sample.isPoseValid) {
+        m_mountSamples.clear();
+    } else {
+        const Sample_t* before = nullptr;
+        double closest = k_MOUNT_MOTION_SPAN_TOLERANCE_SEC;
+        for (const Sample_t& earlier : m_mountSamples) {
+            const double off = std::abs((currentTime - earlier.timestamp) - k_MOUNT_MOTION_SPAN_SEC);
+            if (off < closest) {
+                closest = off;
+                before = &earlier;
+            }
+        }
+        if (before) {
+            MountMotion motion;
+            motionBetween(Eigen::Quaterniond(before->reference.rot), before->reference.trans, Eigen::Quaterniond(sample.reference.rot), sample.reference.trans, motion.referenceTurn, motion.referenceMove);
+            motionBetween(Eigen::Quaterniond(before->target.rot), before->target.trans, Eigen::Quaterniond(sample.target.rot), sample.target.trans, motion.targetTurn, motion.targetMove);
+            const MountEstimator::Added added = mountEstimator.add(motion);
+            m_isMountUnsaved = m_isMountUnsaved || added == MountEstimator::Added::Taken;
+            if (added == MountEstimator::Added::StartedOver) {
+                LOG_CALIB_WARN("The target device no longer moves with the reference device the way its mount had it (was it moved on the reference?): finding the mount anew");
+                m_isMountUnsaved = true;
+            }
+        }
+        m_mountSamples.push_back(sample);
+        while (!m_mountSamples.empty() && currentTime - m_mountSamples.front().timestamp > k_MOUNT_MOTION_SPAN_SEC + 2.0 * k_MOUNT_MOTION_SPAN_TOLERANCE_SEC) {
+            m_mountSamples.pop_front();
+        }
+    }
+
+    if (m_isMountUnsaved && currentTime - m_lastMountSaveTime >= k_MOUNT_SAVE_INTERVAL_SEC) {
+        m_isMountUnsaved = false;
+        m_lastMountSaveTime = currentTime;
+        CalibrationManager::getInstance()->saveConfig();
+    }
+
+    // under relative calibration the calibration is the mount, and once the estimator has enough to go by, its mount is the one
+    // in force: it follows the estimate as that settles, a little at a time
+    if (!isRelativeCalibration || !isMountSettled()) {
+        m_isMountInForce = false;
+        return;
+    }
+    const bool bMoved = calibratedRotation.angularDistance(mountEstimator.rotation()) > k_MOUNT_APPLY_MIN_ANGLE_RAD
+        || (calibratedTranslation - mountEstimator.translation()).norm() > k_MOUNT_APPLY_MIN_DISTANCE_METERS;
+    if (!m_isMountInForce || (bMoved && currentTime - m_lastMountApplyTime >= k_MOUNT_APPLY_INTERVAL_SEC)) {
+        if (!m_isMountInForce) {
+            LOG_CALIB_INFO("Relative calibration by the mount found from {} motions of the two devices", static_cast<int>(mountEstimator.weight()));
+        }
+        m_isMountInForce = true;
+        m_lastMountApplyTime = currentTime;
+        calibrationError = CalibrationError::None;
+        calibratedRotation = mountEstimator.rotation();
+        calibratedTranslation = mountEstimator.translation();
+        apply();
+    }
+}
+
 void TrackingSystemCalibration::updateLiveMetrics(double currentTime)
 {
     if (m_samples.size() < 2 || (currentTime - m_lastLiveMetricTime) < k_LIVE_METRIC_INTERVAL_SEC)
@@ -753,7 +821,7 @@ void TrackingSystemCalibration::updateLiveMetrics(double currentTime)
     errorMetrics.posOffset_rmsError.push(currentTime, k_METRIC_HISTORY_TIMESPAN, posOffset);
 }
 
-Sample_t TrackingSystemCalibration::collectSample(double currentTime) const
+Sample_t TrackingSystemCalibration::collectSample(double currentTime, bool bLogUntracked) const
 {
     vr::DriverPose_t reference, target;
     reference.poseIsValid = false;
@@ -766,7 +834,7 @@ Sample_t TrackingSystemCalibration::collectSample(double currentTime) const
         reference = CalibrationManager::getInstance()->m_poses[this->referenceDevice.deviceId];
         if (!(actuallyConnected && reference.poseIsValid && reference.result == vr::ETrackingResult::TrackingResult_Running_OK)) {
             // dont spam logs
-            if (actuallyConnected) {
+            if (actuallyConnected && bLogUntracked) {
                 LOG_CALIB_WARN("Reference device is not tracking");
             }
             bIsTrackingOk = false;
@@ -777,7 +845,7 @@ Sample_t TrackingSystemCalibration::collectSample(double currentTime) const
         target = CalibrationManager::getInstance()->m_poses[this->targetDevice.deviceId];
         if (!(actuallyConnected && target.poseIsValid && target.result == vr::ETrackingResult::TrackingResult_Running_OK)) {
             // dont spam logs
-            if (actuallyConnected) {
+            if (actuallyConnected && bLogUntracked) {
                 LOG_CALIB_WARN("Target device is not tracking");
             }
             bIsTrackingOk = false;
@@ -858,6 +926,7 @@ bool TrackingSystemCalibration::checkWorldFromDriverJump()
     // clear sample data as it'll have invalid data since we detected this discontinuity
     m_sampleHistory.clear();
     m_samples.clear();
+    m_mountSamples.clear(); // a motion is between two poses of one world. what the estimator has added up stands: a mount is no world's
     m_lastRmsError = INFINITY;
     m_lastAxisVariance = 0.0;
 
@@ -911,6 +980,10 @@ void TrackingSystemCalibration::reset()
 void TrackingSystemCalibration::clearCurrentCalibration()
 {
     LOG_CALIB_INFO("Clearing calibration to identity...");
+    // the user starts over: with the mount too
+    mountEstimator.reset();
+    m_mountSamples.clear();
+    m_isMountInForce = false;
     calibrationError = CalibrationError::Unknown;
     calibratedRotation = Eigen::Quaterniond::Identity();
     calibratedTranslation = Eigen::Vector3d::Zero();
@@ -1152,6 +1225,11 @@ void TrackingSystemCalibration::calibrationTick(const double currentTime)
         return;
     }
 
+    // every tick of a continuous calibration is also a moment of the two devices' motion, for the mount
+    if (state == CalibrationState::CONTINUOUS) {
+        updateMountEstimate(currentTime);
+    }
+
     // prevent overfitting with possibly poor data
     if (m_samples.size() < getSampleCount()) {
         auto sample = collectSample(currentTime);
@@ -1203,7 +1281,10 @@ void TrackingSystemCalibration::calibrationTick(const double currentTime)
             // so a valid relative calibration is replaced by one that passes the checks, as at any other time. if it is no longer
             // right (the tracker was moved on the headset), its error on the new samples is high and the first proper one takes over
             bool bForce = m_shouldForceCalibrateNextTime && !(isRelativeCalibration && isValidCalibration());
-            if (computeCalibrationOneshot(currentTime, bForce) == CalibrationError::None) {
+            if (isRelativeCalibration && isMountSettled()) {
+                // the mount in force is the estimator's, from every motion of the two devices so far (updateMountEstimate). a
+                // calibration from this one batch of samples is another, noisier reading of the same constant
+            } else if (computeCalibrationOneshot(currentTime, bForce) == CalibrationError::None) {
                 LOG_CALIB_INFO("Finished continuous calibration, profile saved");
             }
 
@@ -1633,6 +1714,10 @@ bool CalibrationManager::loadConfig()
         this->m_calibrations[i].referenceDevice.deviceSerialNumber = pConfig->calibrations[i].reference_device.serial;
         this->m_calibrations[i].referenceDevice.trackingSystem = pConfig->calibrations[i].reference_device.tracking_system;
 
+        // what the mount estimator added up in the sessions before, for these two devices
+        this->m_calibrations[i].mountEstimator.restore(pConfig->calibrations[i].mount_estimate);
+        this->m_calibrations[i].mountEstimateDevices = pConfig->calibrations[i].reference_device.serial + "\n" + pConfig->calibrations[i].target_device.serial;
+
         this->m_calibrations[i].isRelativeCalibration = pConfig->calibrations[i].anchor_mode == Configuration_Latest::AnchorMode::HmdRelative;
         this->m_calibrations[i].calibrationSpeed = (CalibrationSpeed)pConfig->calibrations[i].calibration_speed;
 
@@ -1682,6 +1767,10 @@ void CalibrationManager::saveConfig() const
         pConfig->calibrations[i].reference_device.model = this->m_calibrations[i].referenceDevice.deviceModel;
         pConfig->calibrations[i].reference_device.serial = this->m_calibrations[i].referenceDevice.deviceSerialNumber;
         pConfig->calibrations[i].reference_device.tracking_system = this->m_calibrations[i].referenceDevice.trackingSystem;
+
+        // the mount estimator's sums go with the two devices they are of
+        const bool bMountIsOfTheseDevices = this->m_calibrations[i].mountEstimateDevices == this->m_calibrations[i].referenceDevice.deviceSerialNumber + "\n" + this->m_calibrations[i].targetDevice.deviceSerialNumber;
+        pConfig->calibrations[i].mount_estimate = (bMountIsOfTheseDevices && this->m_calibrations[i].mountEstimator.weight() > 0.0) ? this->m_calibrations[i].mountEstimator.state() : std::vector<double> {};
 
         pConfig->calibrations[i].calibration_speed = (uint64_t)this->m_calibrations[i].calibrationSpeed;
         // relative RELIES on continuous, so enforce it here

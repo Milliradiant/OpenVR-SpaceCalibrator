@@ -11,7 +11,9 @@
 
 #include "reference.h"
 #include "replay.h"
+#include <fstream>
 #include "replay_driver.h"
+#include "mount_estimator.h"
 #include "session.h"
 #include "simulate.h"
 #include <cstdio>
@@ -550,7 +552,22 @@ int commandReplay(const Arguments& arguments)
     options.samples = static_cast<int>(arguments.number("--samples", 100.0));
     options.tickRate = arguments.number("--tick", options.tickRate);
     options.verbose = arguments.get("--log") != nullptr;
+    // the mount estimator's sums as a profile keeps them from one session to the next: a file of numbers here
+    if (const char* file = arguments.get("--load-mount")) {
+        std::ifstream in(file);
+        for (double value; in >> value;) {
+            options.mountState.push_back(value);
+        }
+        std::printf("the profile begins with a mount estimate of %zu numbers from %s\n", options.mountState.size(), file);
+    }
     const ReplayResult result = replayOverlay(session, options);
+    if (const char* file = arguments.get("--save-mount")) {
+        std::ofstream out(file);
+        out.precision(17);
+        for (const double value : result.mountState) {
+            out << value << "\n";
+        }
+    }
     if (!result.ok) {
         std::fprintf(stderr, "spacecal-bench: replay: %s\n", result.error.c_str());
         return 1;
@@ -567,6 +584,208 @@ int commandReplay(const Arguments& arguments)
         std::printf("what the driver applies of it (%zu readings):\n", driver.applied.size());
         scoreApplied(session, reference, result.events, driver.applied);
     }
+    return 0;
+}
+
+// The mount estimator (src/common/mount_estimator.cpp) fed from a session the way the overlay can feed it: both devices' latest
+// poses at each of its ticks, with nothing known of the time between them. Returns the mounts it gave, as calibrations in force
+// from their times on.
+std::vector<CalibrationEvent> runMountEstimator(const Session& session, const Reference& reference, spacecal::MountEstimator& estimator, double tickRate, double span, bool aligned, bool print)
+{
+    std::vector<CalibrationEvent> events;
+    const Device& head = *session.reference();
+    const Device& tracker = *session.target();
+    const size_t back = std::max<size_t>(1, static_cast<size_t>(std::lround(span * tickRate)));
+
+    struct Tick {
+        bool usable = false;
+        Pose head, tracker;
+    };
+    std::vector<Tick> ticks;
+    size_t h = 0, t = 0, taken = 0, rejected = 0, tooLittle = 0;
+    double mostRejected = 0.0;
+    size_t nextFrameChange[2] = { 0, 0 };
+    const double checkpoints[] = { 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1e18 };
+    size_t checkpoint = 0;
+    const double begin = std::max(head.samples.front().time, tracker.samples.front().time);
+    const auto report = [&](double time) {
+        if (!print) {
+            return;
+        }
+        if (!estimator.ready()) {
+            std::printf("  %s  no estimate yet (%.0f motions)\n", clock(time).c_str(), estimator.weight());
+            return;
+        }
+        const Pose mount { estimator.rotation(), estimator.translation() };
+        std::printf("  %s  %6.0f motions: %.2f deg and %.1f mm off the hindsight mount; a motion is typically %.2f deg and %.1f mm off it\n", clock(time).c_str(), estimator.weight(),
+            angleBetween(mount.q, reference.mount.mount.q) * k_DEG, (mount.p - reference.mount.mount.p).norm() * 1e3, estimator.turnResidual() * k_DEG, estimator.moveResidual() * 1e3);
+    };
+
+    for (double time = begin; time <= session.duration; time += 1.0 / tickRate) {
+        // a step of either device's frame: the poses before it and after it are not of one world
+        bool stepped = false;
+        const Device* both[2] = { &head, &tracker };
+        for (int d = 0; d < 2; d++) {
+            while (nextFrameChange[d] < both[d]->frameChanges.size() && both[d]->frameChanges[nextFrameChange[d]] <= time) {
+                stepped = stepped || both[d]->frameChanges[nextFrameChange[d]] > begin;
+                nextFrameChange[d]++;
+            }
+        }
+        if (stepped) {
+            ticks.clear();
+        }
+
+        Tick tick;
+        if (aligned) {
+            tick.usable = head.worldAt(time, tick.head) && tracker.worldAt(time + reference.timeOffset, tick.tracker);
+        } else {
+            while (h + 1 < head.samples.size() && head.samples[h + 1].time <= time) {
+                h++;
+            }
+            while (t + 1 < tracker.samples.size() && tracker.samples[t + 1].time <= time) {
+                t++;
+            }
+            const Sample& headSample = head.samples[h];
+            const Sample& trackerSample = tracker.samples[t];
+            tick.usable = headSample.valid && trackerSample.valid && time - headSample.time < 0.1 && time - trackerSample.time < 0.1 && headSample.time <= time && trackerSample.time <= time;
+            tick.head = headSample.world;
+            tick.tracker = trackerSample.world;
+        }
+        ticks.push_back(tick);
+
+        if (ticks.size() > back && tick.usable && ticks[ticks.size() - 1 - back].usable) {
+            const Tick& before = ticks[ticks.size() - 1 - back];
+            spacecal::MountMotion motion;
+            spacecal::motionBetween(before.head.q, before.head.p, tick.head.q, tick.head.p, motion.referenceTurn, motion.referenceMove);
+            spacecal::motionBetween(before.tracker.q, before.tracker.p, tick.tracker.q, tick.tracker.p, motion.targetTurn, motion.targetMove);
+            const spacecal::MountEstimator::Added added = estimator.add(motion);
+            taken += added == spacecal::MountEstimator::Added::Taken;
+            tooLittle += added == spacecal::MountEstimator::Added::TooLittleTurn;
+            rejected += added == spacecal::MountEstimator::Added::Rejected || added == spacecal::MountEstimator::Added::StartedOver;
+            mostRejected = std::max(mostRejected, estimator.rejectedShare());
+            if (added == spacecal::MountEstimator::Added::StartedOver && print) {
+                std::printf("  %s  hardly any motion fits the estimate any more: started over\n", clock(time).c_str());
+            }
+        }
+        if (ticks.size() > 4 * back + 16) {
+            ticks.erase(ticks.begin(), ticks.begin() + static_cast<std::ptrdiff_t>(ticks.size() - back - 1));
+        }
+
+        if (estimator.ready()) {
+            const Pose mount { estimator.rotation(), estimator.translation() };
+            if (events.empty() || time - events.back().time >= 1.0) {
+                CalibrationEvent event;
+                event.time = time;
+                event.enabled = true;
+                event.relative = true;
+                event.calibration = mount;
+                events.push_back(event);
+            }
+        }
+        if (time - begin >= checkpoints[checkpoint]) {
+            report(time);
+            checkpoint++;
+        }
+    }
+    report(session.duration);
+    if (print) {
+        std::printf("  of %zu motions with enough turn in them %zu were taken and %zu left out (%.1f%%; at most %.0f%% of the latest, where 85%% would start it over); %zu more turned too little\n", taken + rejected, taken, rejected,
+            100.0 * static_cast<double>(rejected) / static_cast<double>(std::max<size_t>(1, taken + rejected)), 100.0 * mostRejected, tooLittle);
+    }
+    return events;
+}
+
+// What the mount estimator makes of a session, and what the driver would apply with its mounts. With --after RECORDING the
+// estimator has been through that session first and brings what it kept of it, as it would from one day's play to the next.
+int commandMount(const Arguments& arguments)
+{
+    const double tickRate = arguments.number("--tick", 20.0);
+    const double span = arguments.number("--span", 0.3);
+    const bool aligned = arguments.get("--aligned") != nullptr;
+    spacecal::MountEstimator estimator;
+
+    if (const char* earlier = arguments.get("--after")) {
+        Session session;
+        std::string error;
+        if (!session.load(earlier, error)) {
+            std::fprintf(stderr, "spacecal-bench: %s\n", error.c_str());
+            return 1;
+        }
+        const Reference reference = solveReference(session, referenceOptions(arguments));
+        if (!reference.ok) {
+            std::fprintf(stderr, "spacecal-bench: %s: %s\n", earlier, reference.error.c_str());
+            return 1;
+        }
+        std::printf("the mount estimator over the session before, %s:\n", session.path.filename().string().c_str());
+        runMountEstimator(session, reference, estimator, tickRate, span, aligned, true);
+        // through what a profile would keep of it
+        const std::vector<double> kept = estimator.state();
+        estimator = spacecal::MountEstimator();
+        if (!estimator.restore(kept)) {
+            std::fprintf(stderr, "spacecal-bench: the estimator did not take its own state back\n");
+            return 1;
+        }
+    }
+
+    Session session;
+    Reference reference;
+    if (!solve(arguments, session, reference, true)) {
+        return 1;
+    }
+    std::printf("the mount estimator over the session, fed %s %.0f times a second, motions over %.2f s:\n", aligned ? "poses of the same moment" : "each device's latest pose", tickRate, span);
+    const std::vector<CalibrationEvent> events = runMountEstimator(session, reference, estimator, tickRate, span, aligned, true);
+    if (estimator.ready()) {
+        std::printf("  its mount at the end: %s\n", mountText(Pose { estimator.rotation(), estimator.translation() }).c_str());
+    }
+    if (events.empty()) {
+        return 0;
+    }
+
+    // How good a mount is, without taking any mount's word for it: with the right one the world calibration a pose pair gives,
+    // H * L * T^-1, does not care which way the head is turned, and with one that is off it swings as the head turns. So: how
+    // far one pose pair's calibration is from the mean of those around it, at the feet.
+    const auto steadiness = [&](const Pose& mount, std::vector<double>& scatter) {
+        ReferenceOptions options = referenceOptions(arguments);
+        options.givenMount = &mount;
+        const Reference with = solveReference(session, options);
+        scatter.clear();
+        for (size_t i = 0; with.ok && i < with.times.size(); i++) {
+            scatter.push_back(with.feetError(with.times[i], with.instant[i]));
+        }
+        return with;
+    };
+    std::vector<double> scatter;
+    std::printf("how steady one pose pair's world calibration is at the feet, by the mount it is worked out with:\n");
+    steadiness(reference.mount.mount, scatter);
+    printDistribution("the session's own hindsight mount", scatter, 1e3, "mm");
+    const Pose last { estimator.rotation(), estimator.translation() };
+    const Reference withLast = steadiness(last, scatter);
+    printDistribution("the estimator's, as it stood at the end", scatter, 1e3, "mm");
+    if (!events.empty()) {
+        steadiness(events.front().calibration, scatter);
+        printDistribution("the estimator's first", scatter, 1e3, "mm");
+    }
+    std::vector<double> medians, nineties;
+    for (const CalibrationEvent& event : recordedEvents(*session.target())) {
+        if (event.enabled && event.relative) {
+            steadiness(event.calibration, scatter);
+            if (!scatter.empty()) {
+                medians.push_back(median(scatter));
+                nineties.push_back(percentile(scatter, 0.9));
+            }
+        }
+    }
+    if (!medians.empty()) {
+        std::printf("  the %zu mounts the overlay set live: median from %.1f to %.1f mm (%.1f the middle one), 90%% from %.1f to %.1f (%.1f)\n", medians.size(),
+            1e3 * percentile(medians, 0.0), 1e3 * percentile(medians, 1.0), 1e3 * median(medians), 1e3 * percentile(nineties, 0.0), 1e3 * percentile(nineties, 1.0), 1e3 * median(nineties));
+    }
+
+    // and what the driver applies with the estimator's mounts as they came, judged against the world calibration that the
+    // estimator's own last mount gives
+    const DriverReplayResult driver = replayDriver(session, events);
+    std::printf("what the driver applies with the estimator's mounts, from %s on (%zu readings):\n", clock(events.front().time).c_str(), driver.applied.size());
+    const std::vector<CalibrationEvent> whole = { events.front() };
+    scoreApplied(session, withLast, whole, driver.applied);
     return 0;
 }
 
@@ -619,6 +838,9 @@ int main(int argc, char** argv)
         }
         if (arguments.command == "replay") {
             return commandReplay(arguments);
+        }
+        if (arguments.command == "mount") {
+            return commandMount(arguments);
         }
         if (arguments.command == "driver") {
             return commandDriver(arguments);

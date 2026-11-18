@@ -20,7 +20,7 @@ add_library(recording STATIC ${APP}/src/common/pose_recording.cpp)
 target_include_directories(recording PUBLIC ${APP}/src/common)
 
 # the overlay's calibration, as the overlay builds it but for the headers in stubs/, which come first
-add_library(overlay_calibration STATIC ${APP}/src/overlay/calibration.cpp)
+add_library(overlay_calibration STATIC ${APP}/src/overlay/calibration.cpp ${APP}/src/overlay/mount_estimator.cpp)
 target_include_directories(overlay_calibration PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
     ${APP}/src/overlay
@@ -72,6 +72,11 @@ target_include_directories(test_session_recorder PRIVATE
 target_compile_definitions(test_session_recorder PRIVATE IS_DRIVER EIGEN_HAS_STD_RESULT_OF=0)
 target_link_libraries(test_session_recorder PRIVATE recording Threads::Threads)
 add_test(NAME session_recorder COMMAND test_session_recorder)
+
+# the mount estimator on made-up motions
+add_executable(test_mount_estimator tests/test_mount_estimator.cpp)
+target_link_libraries(test_mount_estimator PRIVATE overlay_calibration)
+add_test(NAME mount_estimator COMMAND test_mount_estimator)
 
 # the driver's relative calibration on made-up poses
 add_executable(test_relative_calibration tests/test_relative_calibration.cpp)

@@ -41,6 +41,7 @@ spacecal-bench score RECORDING       what was applied during the session, judged
 spacecal-bench check RECORDING       each driver's velocities and pose ages against its own poses
 spacecal-bench replay RECORDING      the overlay's calibration code run over the recording, judged the same way
 spacecal-bench driver RECORDING      the driver's relative calibration code run over the recording, judged the same way
+spacecal-bench mount RECORDING       the mount estimator fed from the recording as the overlay feeds it
 spacecal-bench simulate RECORDING    write a made-up session with a known answer
 ```
 
@@ -78,6 +79,20 @@ compares the calibration the recorded driver began each stretch of relative cali
 pose: for a recording made by the same driver code the two are the same. `replay --driver` runs the driver's code on what the
 replayed overlay sets: the two together are what would have reached SteamVR.
 
+### The mount
+
+Under relative calibration the calibration is the mount: where the target device sits on the reference device. The overlay's
+mount estimator (`src/overlay/mount_estimator.cpp`) adds it up from how the two devices move together, over a session and from
+one session to the next, and `replay` runs it as part of the overlay's code: `--save-mount FILE` and `--load-mount FILE` carry
+what a profile would keep of it from one replayed session to another.
+
+`mount` runs the estimator alone, fed each device's latest pose twenty times a second as the overlay has them (`--after
+RECORDING` puts it through that session first), and says how far its mount is from the hindsight one as the session goes. It
+also judges mounts without taking any mount's word for it: with the right mount the world calibration one pose pair gives does
+not care which way the head is turned, and with one that is off it swings as the head turns. So a mount is as good as that
+calibration is steady, at the feet, and the hindsight mount, the estimator's and the ones the overlay set live are each put to
+that.
+
 ### The simulation
 
 `simulate` writes a session through the same writer the driver uses, with a mount and time offset it states in the recording.
@@ -88,7 +103,9 @@ calibration's mount left where it was.
 
 ## Tests
 
-`ctest` runs four: the recording's writer and reader against each other (`tests/test_recording.cpp`); the driver's recorder
+`ctest` runs five: the mount estimator on made-up motions of two devices fixed to each other (`tests/test_mount_estimator.cpp`:
+it finds the mount, leaves out motions that do not fit, comes back the same from what a profile keeps, and starts over when the
+target is moved on the reference); the recording's writer and reader against each other (`tests/test_recording.cpp`); the driver's recorder
 as the driver builds it against a stand-in for SteamVR's settings and device properties, called from several threads at once
 (`tests/test_session_recorder.cpp`); the driver's relative calibration on made-up poses, which has to be the calibration the
 poses were made with and to follow it when it moves (`tests/test_relative_calibration.cpp`); and the bench on simulated sessions:
