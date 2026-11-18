@@ -84,7 +84,9 @@ replayed overlay sets: the two together are what would have reached SteamVR.
 Under relative calibration the calibration is the mount: where the target device sits on the reference device. The overlay's
 mount estimator (`src/overlay/mount_estimator.cpp`) adds it up from how the two devices move together, over a session and from
 one session to the next, and `replay` runs it as part of the overlay's code: `--save-mount FILE` and `--load-mount FILE` carry
-what a profile would keep of it from one replayed session to another.
+what a profile would keep of it from one replayed session to another. With relative calibration off (`--relative 0`) a known
+mount gives the world calibration at every moment, with no batch of samples solved; `--no-mount` is the profile's
+`use_mount_estimate` switched off, every calibration from a batch as before, which is what to compare against.
 
 `mount` runs the estimator alone, fed each device's latest pose twenty times a second as the overlay has them (`--after
 RECORDING[,RECORDING...]` puts it through those sessions first, one after the other; `--carry N` lets it take at most N motions'

@@ -552,6 +552,7 @@ int commandReplay(const Arguments& arguments)
     options.samples = static_cast<int>(arguments.number("--samples", 100.0));
     options.tickRate = arguments.number("--tick", options.tickRate);
     options.verbose = arguments.get("--log") != nullptr;
+    options.useMount = arguments.get("--no-mount") == nullptr;
     // the mount estimator's sums as a profile keeps them from one session to the next: a file of numbers here
     if (const char* file = arguments.get("--load-mount")) {
         std::ifstream in(file);

@@ -20,6 +20,7 @@ struct ReplayOptions {
     double tickRate = 90.0; // how often the overlay's loop comes round, a second. it samples 20 times a second within that
     bool verbose = false; // print what the calibration logs
     std::vector<double> mountState; // what the profile holds of the mount estimator from the sessions before, if anything
+    bool useMount = true; // the profile's use_mount_estimate: off, every calibration comes from a batch of samples
 };
 
 struct ReplayResult {

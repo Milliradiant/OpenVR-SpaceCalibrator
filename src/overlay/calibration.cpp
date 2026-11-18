@@ -206,46 +206,40 @@ Eigen::Vector3d TrackingSystemCalibration::calibrateTranslation(const std::vecto
 {
     eCalibrationError = CalibrationError::None;
 
-    // @TODO: optimise this, this is REALLY slow -> up to 2 SECOND LAG SPIKE IN DEBUG
-    const size_t numDeltas = samples.size() * (samples.size() - 1); // combination(2, 1)
-    Eigen::VectorXd constants(numDeltas * 3);
-    Eigen::MatrixXd coefficients(numDeltas * 3, 3);
+    // The equations are one pair of rows for every two samples i and j: (QAj - QAi) x = QAj dj - QAi di, with QA the reference's
+    // rotation transposed and d the two devices' offset in the sample, and the same with QB, the target's. Their least squares
+    // solution needs only sums over the samples, because the sum over all pairs of (Xi - Xj)^T (Yi - Yj) is
+    // n * sum(Xi^T Yi) - sum(Xi)^T sum(Yi). This was built as one dense matrix of three rows for every pair and factorised: a
+    // quarter of a million rows at 500 samples, and a hitch in the overlay each time. The solution and the singular values below
+    // are the same ones.
+    const double n = static_cast<double>(samples.size());
+    Eigen::Matrix3d sumA = Eigen::Matrix3d::Zero(), sumB = Eigen::Matrix3d::Zero();
+    Eigen::Vector3d sumAd = Eigen::Vector3d::Zero(), sumBd = Eigen::Vector3d::Zero(), sumD = Eigen::Vector3d::Zero();
 
-    size_t row = 0;
-
-    // rotation is only applied to the target tracking system, as that's the tracking system the calibration is targeting! we do not need to modify the reference pose!
-    for (size_t i = 0; i < samples.size(); i++) {
-        Sample_t sample_i = samples[i];
-        sample_i.target.rot = calibratedRotation * sample_i.target.rot;
-        sample_i.target.trans = calibratedRotation * sample_i.target.trans;
-
-        for (size_t j = 0; j < i; j++) {
-            Sample_t sample_j = samples[j];
-            sample_j.target.rot = calibratedRotation * sample_j.target.rot;
-            sample_j.target.trans = calibratedRotation * sample_j.target.trans;
-
-            auto QAi = sample_i.reference.rot.transpose();
-            auto QAj = sample_j.reference.rot.transpose();
-            coefficients.block<3, 3>(row, 0) = QAj - QAi;
-            constants.segment<3>(row) = QAj * (sample_j.reference.trans - sample_j.target.trans) - QAi * (sample_i.reference.trans - sample_i.target.trans);
-            row += 3;
-
-            auto QBi = sample_i.target.rot.transpose();
-            auto QBj = sample_j.target.rot.transpose();
-            coefficients.block<3, 3>(row, 0) = QBj - QBi;
-            constants.segment<3>(row) = QBj * (sample_j.reference.trans - sample_j.target.trans) - QBi * (sample_i.reference.trans - sample_i.target.trans);
-            row += 3;
-        }
+    // rotation is only applied to the target tracking system, as that's the tracking system the calibration is targeting! we do not need to modify the reference pose
+    for (const Sample_t& sample : samples) {
+        const Eigen::Matrix3d QA = sample.reference.rot.transpose();
+        const Eigen::Matrix3d QB = (calibratedRotation * sample.target.rot).transpose();
+        const Eigen::Vector3d offset = sample.reference.trans - calibratedRotation * sample.target.trans;
+        sumA += QA;
+        sumB += QB;
+        sumAd += QA * offset;
+        sumBd += QB * offset;
+        sumD += offset; // QA^T QA and QB^T QB are the identity
     }
 
-    auto svd = coefficients.bdcSvd<Eigen::ComputeThinU | Eigen::ComputeThinV>();
+    // the normal equations of all the pairs' rows
+    const Eigen::Matrix3d normal = 2.0 * n * n * Eigen::Matrix3d::Identity() - sumA.transpose() * sumA - sumB.transpose() * sumB;
+    const Eigen::Vector3d right = 2.0 * n * sumD - sumA.transpose() * sumAd - sumB.transpose() * sumBd;
 
-    if (svd.info() != Eigen::Success) {
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen(normal);
+    if (eigen.info() != Eigen::Success) {
         LOG_CALIB_WARN("Failed to compute numerically stable translation SVD! Aborting calibration...");
         eCalibrationError = CalibrationError::LackOfTranslationVariance;
     }
 
-    Eigen::Vector3d singularValues = svd.singularValues();
+    // the singular values of the pairs' rows are the roots of the normal matrix's eigenvalues, largest first
+    const Eigen::Vector3d singularValues = eigen.eigenvalues().cwiseMax(0.0).cwiseSqrt().reverse();
 
     // min singular value represents how varied the motion is
     double motionVariance = singularValues(2);
@@ -259,7 +253,13 @@ Eigen::Vector3d TrackingSystemCalibration::calibrateTranslation(const std::vecto
         eCalibrationError = CalibrationError::LackOfTranslationVariance;
     }
 
-    Eigen::Vector3d trans = svd.solve(constants);
+    // least squares, and the smallest solution where a direction is not held at all
+    Eigen::Vector3d trans = Eigen::Vector3d::Zero();
+    for (int k = 0; k < 3; k++) {
+        if (eigen.eigenvalues()(k) > 1e-12 * std::max(1.0, eigen.eigenvalues()(2))) {
+            trans += eigen.eigenvectors().col(k) * (eigen.eigenvectors().col(k).dot(right) / eigen.eigenvalues()(k));
+        }
+    }
 
     if (eCalibrationError == CalibrationError::None) {
         LOG_CALIB_INFO("Calibrated translation (cm): x={:.2f} y={:.2f} z={:.2f}", trans[0] * 100.0, trans[1] * 100.0, trans[2] * 100.0);
@@ -773,7 +773,7 @@ void TrackingSystemCalibration::updateMountEstimate(const double currentTime)
             }
         }
         m_mountSamples.push_back(sample);
-        while (!m_mountSamples.empty() && currentTime - m_mountSamples.front().timestamp > k_MOUNT_MOTION_SPAN_SEC + 2.0 * k_MOUNT_MOTION_SPAN_TOLERANCE_SEC) {
+        while (!m_mountSamples.empty() && currentTime - m_mountSamples.front().timestamp > std::max(k_MOUNT_MOTION_SPAN_SEC + 2.0 * k_MOUNT_MOTION_SPAN_TOLERANCE_SEC, k_WORLD_FROM_MOUNT_WINDOW_SEC)) {
             m_mountSamples.pop_front();
         }
     }
@@ -784,12 +784,51 @@ void TrackingSystemCalibration::updateMountEstimate(const double currentTime)
         CalibrationManager::getInstance()->saveConfig();
     }
 
-    // under relative calibration the calibration is the mount, and once the estimator has enough to go by, its mount is the one
-    // in force: it follows the estimate as that settles, a little at a time
-    if (!isRelativeCalibration || !isMountSettled()) {
+    if (!isMountSettled()) {
         m_isMountInForce = false;
         return;
     }
+
+    if (!isRelativeCalibration) {
+        // the world calibration from the mount: what the latest pose pairs give with it, C = H * L * T^-1, as their mean about
+        // where the target is (the pairs' calibrations differ by small turns, which only cancel near the device they are of)
+        if (m_mountSamples.empty() || (m_isMountInForce && currentTime - m_lastMountApplyTime < k_WORLD_FROM_MOUNT_INTERVAL_SEC)) {
+            return;
+        }
+        const Eigen::Affine3d mount = Eigen::Translation3d(mountEstimator.translation()) * mountEstimator.rotation();
+        Eigen::Vector3d pivot = Eigen::Vector3d::Zero();
+        for (const Sample_t& pair : m_mountSamples) {
+            pivot += pair.target.trans;
+        }
+        pivot /= static_cast<double>(m_mountSamples.size());
+
+        Eigen::Vector4d rotationSum = Eigen::Vector4d::Zero();
+        Eigen::Vector3d pivotSum = Eigen::Vector3d::Zero();
+        for (const Sample_t& pair : m_mountSamples) {
+            const Eigen::Affine3d reference = Eigen::Translation3d(pair.reference.trans) * pair.reference.rot;
+            const Eigen::Affine3d target = Eigen::Translation3d(pair.target.trans) * pair.target.rot;
+            const Eigen::Affine3d calibration = reference * mount * target.inverse();
+            Eigen::Quaterniond rotation(calibration.rotation());
+            if (rotation.coeffs().dot(rotationSum) < 0.0) {
+                rotation.coeffs() = -rotation.coeffs();
+            }
+            rotationSum += rotation.coeffs();
+            pivotSum += calibration * pivot;
+        }
+        if (!m_isMountInForce) {
+            LOG_CALIB_INFO("Calibration by the mount found from {} motions of the two devices", static_cast<int>(mountEstimator.weight()));
+        }
+        m_isMountInForce = true;
+        m_lastMountApplyTime = currentTime;
+        calibrationError = CalibrationError::None;
+        calibratedRotation = Eigen::Quaterniond(rotationSum).normalized();
+        calibratedTranslation = pivotSum / static_cast<double>(m_mountSamples.size()) - calibratedRotation * pivot;
+        apply();
+        return;
+    }
+
+    // under relative calibration the calibration is the mount, and once the estimator has enough to go by, its mount is the one
+    // in force: it follows the estimate as that settles, a little at a time
     const bool bMoved = calibratedRotation.angularDistance(mountEstimator.rotation()) > k_MOUNT_APPLY_MIN_ANGLE_RAD
         || (calibratedTranslation - mountEstimator.translation()).norm() > k_MOUNT_APPLY_MIN_DISTANCE_METERS;
     if (!m_isMountInForce || (bMoved && currentTime - m_lastMountApplyTime >= k_MOUNT_APPLY_INTERVAL_SEC)) {
@@ -1281,9 +1320,10 @@ void TrackingSystemCalibration::calibrationTick(const double currentTime)
             // so a valid relative calibration is replaced by one that passes the checks, as at any other time. if it is no longer
             // right (the tracker was moved on the headset), its error on the new samples is high and the first proper one takes over
             bool bForce = m_shouldForceCalibrateNextTime && !(isRelativeCalibration && isValidCalibration());
-            if (isRelativeCalibration && isMountSettled()) {
-                // the mount in force is the estimator's, from every motion of the two devices so far (updateMountEstimate). a
-                // calibration from this one batch of samples is another, noisier reading of the same constant
+            if (isMountSettled()) {
+                // the calibration in force comes from the estimator's mount, from every motion of the two devices so far
+                // (updateMountEstimate): the mount itself under relative calibration, and otherwise the world calibration the
+                // latest poses give with it. a calibration from this one batch of samples is a noisier reading of the same
             } else if (computeCalibrationOneshot(currentTime, bForce) == CalibrationError::None) {
                 LOG_CALIB_INFO("Finished continuous calibration, profile saved");
             }
@@ -1717,6 +1757,7 @@ bool CalibrationManager::loadConfig()
         // what the mount estimator added up in the sessions before, for these two devices
         this->m_calibrations[i].mountEstimator.restore(pConfig->calibrations[i].mount_estimate);
         this->m_calibrations[i].mountEstimateDevices = pConfig->calibrations[i].reference_device.serial + "\n" + pConfig->calibrations[i].target_device.serial;
+        this->m_calibrations[i].useMountEstimate = pConfig->calibrations[i].use_mount_estimate;
 
         this->m_calibrations[i].isRelativeCalibration = pConfig->calibrations[i].anchor_mode == Configuration_Latest::AnchorMode::HmdRelative;
         this->m_calibrations[i].calibrationSpeed = (CalibrationSpeed)pConfig->calibrations[i].calibration_speed;
@@ -1768,6 +1809,7 @@ void CalibrationManager::saveConfig() const
         pConfig->calibrations[i].reference_device.serial = this->m_calibrations[i].referenceDevice.deviceSerialNumber;
         pConfig->calibrations[i].reference_device.tracking_system = this->m_calibrations[i].referenceDevice.trackingSystem;
 
+        pConfig->calibrations[i].use_mount_estimate = this->m_calibrations[i].useMountEstimate;
         // the mount estimator's sums go with the two devices they are of
         const bool bMountIsOfTheseDevices = this->m_calibrations[i].mountEstimateDevices == this->m_calibrations[i].referenceDevice.deviceSerialNumber + "\n" + this->m_calibrations[i].targetDevice.deviceSerialNumber;
         pConfig->calibrations[i].mount_estimate = (bMountIsOfTheseDevices && this->m_calibrations[i].mountEstimator.weight() > 0.0) ? this->m_calibrations[i].mountEstimator.state() : std::vector<double> {};

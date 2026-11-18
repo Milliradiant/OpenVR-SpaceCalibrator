@@ -182,6 +182,10 @@ namespace spacecal {
                     // what the mount estimator has added up of how the target device moves with the reference device, for
                     // these two devices (MountEstimator::state). empty until there is any
                     std::vector<double> mount_estimate;
+                    // once the mount is known well enough, calibrate by it: under relative calibration it is the calibration, and
+                    // with relative calibration off the world calibration is worked out from it at every moment. off: the mount
+                    // is still added up, and every calibration comes from a batch of samples as before
+                    bool use_mount_estimate = true;
                 };
 
                 struct BaseStationManagementData {

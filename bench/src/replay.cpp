@@ -245,6 +245,7 @@ ReplayResult replayOverlay(const Session& session, const ReplayOptions& options)
     calibration.reference_device = deviceOf(session.referenceIndex);
     calibration.target_device = deviceOf(session.targetIndex);
     calibration.mount_estimate = options.mountState;
+    calibration.use_mount_estimate = options.useMount;
     configuration.getConfiguration()->calibrations = { calibration };
 
     static spacecal::CalibrationManager manager;

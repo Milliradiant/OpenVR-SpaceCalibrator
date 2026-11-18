@@ -44,6 +44,11 @@ constexpr double k_MOUNT_SAVE_INTERVAL_SEC = 30.0; // what the estimator has add
 // about as good as one batch calibration's by then (some 0.3 degrees) and goes on getting better, where a batch's does not. A
 // session that begins with a profile's estimate has them from its first moment.
 constexpr double k_MOUNT_MIN_MOTIONS_IN_FORCE = 1000.0;
+// With relative calibration off and the mount settled, the world calibration is what the two devices' poses give with the mount,
+// H * L * T^-1: any one pose pair gives it, so it is there from a session's first tracked moment and needs no batch of varied
+// samples, no acceptance and no solve. It is the mean over the pose pairs of this long, handed to the driver this often.
+constexpr double k_WORLD_FROM_MOUNT_WINDOW_SEC = 2.0;
+constexpr double k_WORLD_FROM_MOUNT_INTERVAL_SEC = 0.5;
 
 constexpr double k_ROTATION_VARIANCE_MIN_TOTAL_ROTATION = 3.0; // sum of squared radians vs noise
 constexpr int k_ROTATION_VARIANCE_SECOND_AXIS_RATIO = 3; // middle eigen value vs total
@@ -243,6 +248,7 @@ public:
     // calibration in force once it has enough to go by: a batch of samples then has nothing to add to it.
     MountEstimator mountEstimator;
     std::string mountEstimateDevices; // the reference's and the target's serial numbers it was added up for
+    bool useMountEstimate = true; // calibrate by it once it is settled (the profile's use_mount_estimate)
     double calibratedScale = 1.0;
 
     double wantedUpdateInterval = 1.0;
@@ -306,7 +312,7 @@ private:
 
     void updateMountEstimate(double currentTime);
     // the estimator's mount is good enough to be the relative calibration in force
-    [[nodiscard]] bool isMountSettled() const { return mountEstimator.ready() && mountEstimator.weight() >= k_MOUNT_MIN_MOTIONS_IN_FORCE; }
+    [[nodiscard]] bool isMountSettled() const { return useMountEstimate && mountEstimator.ready() && mountEstimator.weight() >= k_MOUNT_MIN_MOTIONS_IN_FORCE; }
     std::deque<Sample_t> m_mountSamples; // the last moments' poses of the two devices, to take motions between
     bool m_isMountInForce = false; // the calibration in force is the estimator's mount
     bool m_isMountUnsaved = false;
