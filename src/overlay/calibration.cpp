@@ -861,12 +861,23 @@ bool TrackingSystemCalibration::checkWorldFromDriverJump()
     m_lastRmsError = INFINITY;
     m_lastAxisVariance = 0.0;
 
+    // A relative calibration is the target's pose in the reference's frame: where the tracker sits on the headset. No step of
+    // either tracking system's world moves that, and the driver works the world calibration out anew from the next pair of poses,
+    // so there is nothing to recover. Applying the step to it put the trackers off by the whole step until a new calibration
+    // was found.
+    if (isRelativeCalibration) {
+        return true;
+    }
+
     // attempt to recover the calibration so that the user doesn't notice
     Eigen::AffineCompact3d calib = Eigen::Translation3d(calibratedTranslation) * calibratedRotation;
     if (targetChanged) {
-        calib = deltaTarget.inverse() * calib;
+        // the target's world poses are now deltaTarget on from where they were, and the calibration is applied on top of them:
+        // the same result takes C' * deltaTarget = C
+        calib = calib * deltaTarget.inverse();
     }
     if (refChanged) {
+        // the reference's world, which the calibration maps into, is now deltaRef on from where it was
         calib = deltaRef * calib;
     }
 
