@@ -393,34 +393,73 @@ CalibrationError TrackingSystemCalibration::computeCalibrationOneshot(double cur
     return eCalibrationError;
 }
 
+bool TrackingSystemCalibration::averageLocalCalibration(const Eigen::Affine3d& worldCalib, const std::vector<Sample_t>& samples, Eigen::Affine3d& localCalib)
+{
+    // We estimate C_L, a matrix mapping the tracker to it's position in HMD space relative to the HMD.
+    // To do this we apply the calibration and then make it relative to the HMD: T_W = C * T, C_L = H^-1 * T_W.
+    //
+    // The target is fixed to the reference, so C_L is one constant and every sample is a reading of it. A single reading carries that
+    // sample's own error: the two poses are not from the same instant, so while the head moves (which a calibration needs) the reference is
+    // a few ms of motion away from where the target has it, a centimetre and a degree or so. The world calibration is a fit over all the
+    // samples; the conversion has to be one too, or what it stores is only as good as the head was still at the last sample.
+    Eigen::Vector3d transSum = Eigen::Vector3d::Zero();
+    Eigen::Vector4d rotSum = Eigen::Vector4d::Zero();
+    Eigen::Quaterniond firstRot = Eigen::Quaterniond::Identity();
+    size_t validCount = 0;
+
+    for (const Sample_t& sample : samples) {
+        if (!sample.isPoseValid)
+            continue;
+
+        Eigen::Affine3d refPose = Eigen::Translation3d(sample.reference.trans) * sample.reference.rot;
+        Eigen::Affine3d targetPose = Eigen::Translation3d(sample.target.trans) * sample.target.rot;
+        Eigen::Affine3d sampleLocal = refPose.inverse() * worldCalib * targetPose;
+
+        // the readings are within a few degrees of each other, where the mean rotation is the normalised sum of the quaternions, each
+        // taken on the first one's side (q and -q are the same rotation)
+        Eigen::Quaterniond q(sampleLocal.rotation());
+        if (validCount == 0) {
+            firstRot = q;
+        } else if (q.dot(firstRot) < 0.0) {
+            q.coeffs() = -q.coeffs();
+        }
+
+        transSum += sampleLocal.translation();
+        rotSum += q.coeffs();
+        validCount++;
+    }
+
+    if (validCount == 0 || rotSum.norm() < 1e-9) {
+        return false;
+    }
+
+    Eigen::Quaterniond meanRot;
+    meanRot.coeffs() = rotSum.normalized();
+    localCalib = Eigen::Translation3d(transSum / static_cast<double>(validCount)) * meanRot;
+    return true;
+}
+
 bool TrackingSystemCalibration::makeCalibrationLocal(Eigen::Quaterniond& rotation, Eigen::Vector3d& translation)
 {
-    if (isRelativeCalibration && !m_samples.empty()) {
-        Sample_t& lastSample = m_samples.back();
-        // take calibration as a worldspace transformation matrix; take its inverse and apply it to the last known worldspace pose of the ref device
-        Eigen::Affine3d worldCalib = Eigen::Translation3d(translation) * rotation;
-        Eigen::Affine3d refPose = Eigen::Translation3d(lastSample.reference.trans) * lastSample.reference.rot;
-        Eigen::Affine3d targetPose = Eigen::Translation3d(lastSample.target.trans) * lastSample.target.rot;
-
-        // We estimate C_L, a matrix mapping the tracker to it's position in HMD space relative to the HMD.
-        // To do this we apply the calibration and then make it relative to the HMD.
-
-        // T_W = C * T
-        Eigen::Affine3d calibratedTarget = worldCalib * targetPose;
-
-        // C_L = H^-1 * T_W
-        Eigen::Affine3d localCalib = refPose.inverse() * calibratedTarget;
-
-        rotation = Eigen::Quaterniond(localCalib.rotation());
-        translation = localCalib.translation();
-
-        Eigen::Vector3d euler = rotation.toRotationMatrix().canonicalEulerAngles(2, 1, 0) * (180.0 / EIGEN_PI);
-        LOG_CALIB_INFO("Converted to local space. rotation (deg): yaw={:.2f} pitch={:.2f} roll={:.2f} ; translation (cm): x={:.2f} y={:.2f} z={:.2f}",
-            euler[1], euler[2], euler[0],
-            translation[0] * 100.0, translation[1] * 100.0, translation[2] * 100.0);
-        return true;
+    if (!isRelativeCalibration) {
+        return false;
     }
-    return false;
+
+    // take calibration as a worldspace transformation matrix, and make it relative to the ref device over the samples it was computed from
+    Eigen::Affine3d worldCalib = Eigen::Translation3d(translation) * rotation;
+    Eigen::Affine3d localCalib = Eigen::Affine3d::Identity();
+    if (!averageLocalCalibration(worldCalib, m_samples, localCalib)) {
+        return false;
+    }
+
+    rotation = Eigen::Quaterniond(localCalib.rotation()).normalized();
+    translation = localCalib.translation();
+
+    Eigen::Vector3d euler = rotation.toRotationMatrix().canonicalEulerAngles(2, 1, 0) * (180.0 / EIGEN_PI);
+    LOG_CALIB_INFO("Converted to local space. rotation (deg): yaw={:.2f} pitch={:.2f} roll={:.2f} ; translation (cm): x={:.2f} y={:.2f} z={:.2f}",
+        euler[1], euler[2], euler[0],
+        translation[0] * 100.0, translation[1] * 100.0, translation[2] * 100.0);
+    return true;
 }
 
 bool TrackingSystemCalibration::setRelativeCalibration(bool bRelative)
@@ -452,6 +491,15 @@ bool TrackingSystemCalibration::setRelativeCalibration(bool bRelative)
     Eigen::Affine3d convertedCalib = bRelative
         ? refPose.inverse() * storedCalib * targetPose
         : refPose * storedCalib * targetPose.inverse();
+
+    // to local: over the samples collected so far where there are some, as a calibration's own conversion is (makeCalibrationLocal).
+    // one sample is the fallback. back to world it is one sample by nature: the world calibration it gives is the one for this instant
+    if (bRelative) {
+        Eigen::Affine3d averagedCalib = Eigen::Affine3d::Identity();
+        if (m_samples.size() >= k_MIN_SAMPLES_TO_AVERAGE_LOCAL && averageLocalCalibration(storedCalib, m_samples, averagedCalib)) {
+            convertedCalib = averagedCalib;
+        }
+    }
 
     calibratedRotation = Eigen::Quaterniond(convertedCalib.rotation()).normalized();
     calibratedTranslation = convertedCalib.translation();
@@ -1137,7 +1185,14 @@ void TrackingSystemCalibration::calibrationTick(const double currentTime)
             break;
         }
         case CalibrationState::CONTINUOUS: {
-            if (computeCalibrationOneshot(currentTime, m_shouldForceCalibrateNextTime) == CalibrationError::None) {
+            // the first calibration after a start or a reset is forced through its checks, to get a world calibration from a session
+            // ago (the reference's space may have been recentred since) roughly right at once. a relative calibration is where the
+            // target sits on the reference, which a new session does not change: forcing an unchecked one over it (the first samples
+            // of a head that is barely moving yet) only makes it worse, tens of centimetres at times, until a proper one replaces it.
+            // so a valid relative calibration is replaced by one that passes the checks, as at any other time. if it is no longer
+            // right (the tracker was moved on the headset), its error on the new samples is high and the first proper one takes over
+            bool bForce = m_shouldForceCalibrateNextTime && !(isRelativeCalibration && isValidCalibration());
+            if (computeCalibrationOneshot(currentTime, bForce) == CalibrationError::None) {
                 LOG_CALIB_INFO("Finished continuous calibration, profile saved");
             }
 

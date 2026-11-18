@@ -30,6 +30,7 @@ constexpr double k_ROTATION_MIN_VARIANCE = 0.15; // @TODO: fine tune
 constexpr double k_TRANSLATION_MIN_MOTION_THRESHOLD = 0.01; // @TODO: fine tune
 constexpr double k_TRANSLATION_MAX_AMPLIFIED_NOISE_FACTOR = 3.0; // @TODO: fine tune
 constexpr size_t k_MIN_DELTA_SAMPLE_COUNT = 200;
+constexpr size_t k_MIN_SAMPLES_TO_AVERAGE_LOCAL = 20; // below this, switching relative calibration on converts with the current pose alone
 
 constexpr double k_ROTATION_VARIANCE_MIN_TOTAL_ROTATION = 3.0; // sum of squared radians vs noise
 constexpr int k_ROTATION_VARIANCE_SECOND_AXIS_RATIO = 3; // middle eigen value vs total
@@ -258,6 +259,8 @@ private:
     Eigen::Quaterniond calibrateRotation(const std::vector<Sample_t>& samples, CalibrationError& eCalibrationError);
     Eigen::Vector3d calibrateTranslation(const std::vector<Sample_t>& samples, const Eigen::Quaterniond& calibratedRotation, CalibrationError& eCalibrationError);
     bool makeCalibrationLocal(Eigen::Quaterniond& rotation, Eigen::Vector3d& translation);
+    // the reference-relative calibration a world calibration gives, averaged over the valid samples. false if there are none
+    static bool averageLocalCalibration(const Eigen::Affine3d& worldCalib, const std::vector<Sample_t>& samples, Eigen::Affine3d& localCalib);
     CalibrationError computeCalibrationOneshot(double currentTime, bool bForceCalibration); // computes instantaneous calibration
 
     Pose_t applyTransform(const Pose_t& originalPose, const Eigen::AffineCompact3d& transform) const;
