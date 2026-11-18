@@ -98,7 +98,21 @@ static bool isRecording(const fs::directory_entry& entry)
     return name.rfind(k_FILE_PREFIX, 0) == 0 && entry.path().extension() == k_FILE_EXTENSION;
 }
 
-size_t pruneRecordings(const fs::path& directory, uint64_t maxTotalBytes)
+// As a recording grows the older ones make room for it. The folder is looked at every so many bytes written, and the others are
+// then left what the limit allows less two such steps: the one this recording grows before the next look, and what one write may
+// overshoot it by
+static uint64_t pruneStep(uint64_t maxTotalBytes)
+{
+    return std::min<uint64_t>(k_PRUNE_STEP_BYTES, maxTotalBytes / 8);
+}
+
+static uint64_t roomForOthers(uint64_t maxTotalBytes, uint64_t bytesWritten)
+{
+    const uint64_t taken = bytesWritten + 2 * pruneStep(maxTotalBytes);
+    return taken >= maxTotalBytes ? 0 : maxTotalBytes - taken;
+}
+
+size_t pruneRecordings(const fs::path& directory, uint64_t maxTotalBytes, const fs::path& keep)
 {
     struct Entry {
         fs::path path;
@@ -109,7 +123,7 @@ size_t pruneRecordings(const fs::path& directory, uint64_t maxTotalBytes)
 
     std::error_code ec;
     for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
-        if (!isRecording(*it)) {
+        if (!isRecording(*it) || (!keep.empty() && it->path().filename() == keep.filename())) {
             continue;
         }
         std::error_code sizeError;
@@ -152,7 +166,7 @@ bool Writer::open(const fs::path& directory, uint64_t maxTotalBytes)
         return false;
     }
 
-    pruneRecordings(directory, maxTotalBytes);
+    pruneRecordings(directory, roomForOthers(maxTotalBytes, 0));
 
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm local = {};
@@ -164,7 +178,17 @@ bool Writer::open(const fs::path& directory, uint64_t maxTotalBytes)
     char stamp[32] = {};
     std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &local);
 
-    return openFile(directory / (std::string(k_FILE_PREFIX) + stamp + k_FILE_EXTENSION));
+    // two sessions begun within the same second keep a file each
+    fs::path file = directory / (std::string(k_FILE_PREFIX) + stamp + k_FILE_EXTENSION);
+    for (int n = 2; n < 100 && fs::exists(file, ec); n++) {
+        file = directory / (std::string(k_FILE_PREFIX) + stamp + "_" + std::to_string(n) + k_FILE_EXTENSION);
+    }
+    if (!openFile(file)) {
+        return false;
+    }
+    m_directory = directory;
+    m_maxTotalBytes = maxTotalBytes;
+    return true;
 }
 
 bool Writer::openFile(const fs::path& file)
@@ -190,6 +214,10 @@ bool Writer::openFile(const fs::path& file)
     m_writing.reserve(1024 * 1024);
     m_dropped = 0;
     m_error.clear();
+    m_directory.clear();
+    m_maxTotalBytes = 0;
+    m_bytesWritten = sizeof(k_MAGIC);
+    m_bytesAtLastPrune = 0;
     m_isOpen = true;
     return true;
 }
@@ -338,6 +366,16 @@ void Writer::flush(bool sync)
         handle = m_file;
     }
 
+    if (m_maxTotalBytes != 0 && m_bytesWritten + m_writing.size() > m_maxTotalBytes) {
+        // one session as large as everything the folder may hold: it ends here, whole up to this point
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_error = "the recording reached the folder's size limit";
+        m_isOpen = false;
+        std::fclose(m_file);
+        m_file = nullptr;
+        return;
+    }
+
     bool failed = false;
     if (!m_writing.empty()) {
         failed = std::fwrite(m_writing.data(), 1, m_writing.size(), handle) != m_writing.size();
@@ -353,6 +391,13 @@ void Writer::flush(bool sync)
         m_isOpen = false;
         std::fclose(m_file);
         m_file = nullptr;
+        return;
+    }
+
+    m_bytesWritten += m_writing.size();
+    if (m_maxTotalBytes != 0 && m_bytesWritten - m_bytesAtLastPrune >= pruneStep(m_maxTotalBytes)) {
+        m_bytesAtLastPrune = m_bytesWritten;
+        pruneRecordings(m_directory, roomForOthers(m_maxTotalBytes, m_bytesWritten), m_path);
     }
 }
 

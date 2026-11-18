@@ -24,6 +24,7 @@ constexpr uint8_t k_NO_DEVICE = 0xFF;
 constexpr size_t k_MAX_DEVICES = 64; // vr::k_unMaxTrackedDeviceCount
 constexpr const char* k_FILE_PREFIX = "poses_";
 constexpr const char* k_FILE_EXTENSION = ".screc";
+constexpr uint64_t k_PRUNE_STEP_BYTES = 16 * 1024 * 1024; // how much a recording grows between two looks at the folder's size
 
 enum class RecordType : uint8_t {
     Session = 1, // text, "key=value" lines: what made the recording and when
@@ -107,8 +108,9 @@ public:
     Writer(const Writer&) = delete;
     Writer& operator=(const Writer&) = delete;
 
-    // makes room in `directory` (the oldest recordings go until what is left is under maxTotalBytes, the new one counted at nothing)
-    // and opens a new recording there. false, with the reason in error(), if it cannot
+    // opens a new recording in `directory` and keeps the folder's recordings, this one included, under maxTotalBytes for as long
+    // as it is written: the oldest go as this one grows, and a recording that reaches the limit by itself ends there, with the
+    // reason in error(). false, with the reason in error(), if it cannot be opened
     bool open(const std::filesystem::path& directory, uint64_t maxTotalBytes);
     // opens a recording at this exact path
     bool openFile(const std::filesystem::path& file);
@@ -128,7 +130,8 @@ public:
     void latency(double time, uint8_t deviceIndex, const LatencyRecord& record);
     void note(double time, const std::string& text);
 
-    // writes what was appended since the last call to the file. `sync` also has the OS take it, so that it survives the process
+    // writes what was appended since the last call to the file. `sync` also has the OS take it, so that it survives the process.
+    // one thread at a time
     void flush(bool sync);
 
 private:
@@ -142,10 +145,17 @@ private:
     std::atomic<uint64_t> m_dropped = 0;
     std::string m_error;
     std::filesystem::path m_path;
+
+    // the folder's size limit, for flush alone. no limit for a recording opened by its path
+    std::filesystem::path m_directory;
+    uint64_t m_maxTotalBytes = 0;
+    uint64_t m_bytesWritten = 0;
+    uint64_t m_bytesAtLastPrune = 0;
 };
 
-// Removes the oldest recordings in `directory` until the rest take no more than maxTotalBytes. Returns how many were removed
-size_t pruneRecordings(const std::filesystem::path& directory, uint64_t maxTotalBytes);
+// Removes the oldest recordings in `directory` until the rest take no more than maxTotalBytes. Returns how many were removed.
+// `keep` (the recording being written) is neither counted nor removed
+size_t pruneRecordings(const std::filesystem::path& directory, uint64_t maxTotalBytes, const std::filesystem::path& keep = {});
 
 // One record as read back
 struct Record {

@@ -16,8 +16,9 @@ ctest --test-dir build-bench
 ## Recordings
 
 One file a session, `poses_YYYYMMDD_HHMMSS.screc`, in the `recordings` folder beside Space Calibrator's logs and configuration.
-The oldest are deleted when the folder passes `recordingsMaxMB` (1024 by default), and `recordPoses: false` switches recording
-off; both are settings of the `driver_01spacecalibrator` section of SteamVR's settings.
+The folder is kept under `recordingsMaxMB` (1024 by default): the oldest recordings go as the current one grows, and a session
+that reaches the limit by itself stops being recorded there. `recordPoses: false` switches recording off. Both are settings of
+the `driver_01spacecalibrator` section of SteamVR's settings.
 
 A recording holds, each with the time it happened:
 
@@ -25,7 +26,8 @@ A recording holds, each with the time it happened:
   anything (position, rotation, velocities, the pose's stated age, validity), and every other device's five times a second;
 - each device's world-from-driver and driver-from-head frames, when they change;
 - every calibration the overlay hands the driver, and the calibration the driver actually applies as it blends toward it;
-- the driver's latency estimate between the two devices, and each device's serial, model and tracking system.
+- the latency between the two devices as the driver used it (under relative calibration), and each device's serial, model
+  and tracking system.
 
 The format is `src/common/pose_recording.h`: a magic, then records of a 12 byte header (type, device, payload length, time) and
 a payload. A reader skips record types it does not know, and a file cut short by a crash reads up to its last whole record.
@@ -67,3 +69,9 @@ calibration code is judged by building the bench with it and replaying the same 
 
 `simulate` writes a session through the same writer the driver uses, with a mount and time offset it states in the recording.
 The bench's test holds `reference` to finding them: within 0.05 degrees, 1 mm and 1 ms.
+
+## Tests
+
+`ctest` runs three: the recording's writer and reader against each other (`tests/test_recording.cpp`), the driver's recorder
+as the driver builds it against a stand-in for SteamVR's settings and device properties, called from several threads at once
+(`tests/test_session_recorder.cpp`), and the reference on a simulated session.

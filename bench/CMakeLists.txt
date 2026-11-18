@@ -52,4 +52,18 @@ target_link_libraries(test_recording PRIVATE recording)
 find_package(Threads REQUIRED)
 target_link_libraries(test_recording PRIVATE Threads::Threads)
 add_test(NAME recording COMMAND test_recording)
+
+# the driver's recorder as the driver builds it, against a stand-in for SteamVR
+add_executable(test_session_recorder tests/test_session_recorder.cpp ${APP}/src/driver/session_recorder.cpp)
+target_include_directories(test_session_recorder PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+    ${APP}/src/driver
+    ${APP}/src/common
+    ${APP}/vendor
+    ${APP}/vendor/openvr/headers
+    ${APP}/vendor/fmt/include
+    ${APP}/vendor/eigen)
+target_compile_definitions(test_session_recorder PRIVATE IS_DRIVER EIGEN_HAS_STD_RESULT_OF=0)
+target_link_libraries(test_session_recorder PRIVATE recording Threads::Threads)
+add_test(NAME session_recorder COMMAND test_session_recorder)
 add_test(NAME bench COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:spacecal-bench> -DWORK=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bench.cmake)

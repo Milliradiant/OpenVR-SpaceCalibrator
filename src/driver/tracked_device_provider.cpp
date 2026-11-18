@@ -77,7 +77,7 @@ void ServerTrackedDeviceProvider::RunFrame()
         }
     }
 
-    m_sessionRecorder.onFrame(m_transforms, m_latencyEstimator, displayFrequency);
+    m_sessionRecorder.onFrame(m_transforms, displayFrequency);
 }
 bool ServerTrackedDeviceProvider::ShouldBlockStandbyMode()
 {
@@ -274,6 +274,7 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
                 // world-space pose of target device (T')
                 double latencyConfidence = 0.0;
                 double latency = m_latencyEstimator.get_latency(transform.unRelativeReferenceOpenvrDeviceId, transform.unRelativeTargetOpenvrDeviceId, latencyConfidence);
+                m_sessionRecorder.onLatency(transform.unRelativeReferenceOpenvrDeviceId, transform.unRelativeTargetOpenvrDeviceId, latency, latencyConfidence);
                 Eigen::Affine3d targetWorldNow = getWorldFromDriverPose(targetPose, m_fVsyncPredictionTime + latency);
 
                 // local-space calibration transform (C_L)

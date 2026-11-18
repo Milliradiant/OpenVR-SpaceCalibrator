@@ -14,8 +14,6 @@
 
 namespace spacecal {
 
-class LatencyEstimator;
-
 constexpr const char* k_SETTINGS_SECTION = "driver_01spacecalibrator";
 constexpr const char* k_SETTINGS_RECORD_POSES = "recordPoses"; // whether a session's poses are recorded. on unless set to false
 constexpr const char* k_SETTINGS_RECORDINGS_MAX_MB = "recordingsMaxMB"; // what the recordings may take together before the oldest go
@@ -44,8 +42,11 @@ public:
     void onPose(vr::TrackedDeviceIndex_t deviceIndex, const vr::DriverPose_t& pose) noexcept;
     // the world calibration just applied to a device under relative calibration. any thread
     void onApplied(vr::TrackedDeviceIndex_t deviceIndex, const Eigen::Quaterniond& rotation, const Eigen::Vector3d& translation) noexcept;
+    // the latency between the two devices that the driver just used for a relative calibration. any thread. the recorder is handed
+    // it and never asks the estimator itself: asking moves the estimate along, and a recording must not change what it records
+    void onLatency(vr::TrackedDeviceIndex_t referenceDevice, vr::TrackedDeviceIndex_t targetDevice, double latency, double confidence) noexcept;
     // once per driver frame, from the thread that runs it: what the overlay asks for and who the devices are
-    void onFrame(const ipc::protocol::Command_SetDeviceTransform_t* transforms, LatencyEstimator& latencyEstimator, double displayFrequency) noexcept;
+    void onFrame(const ipc::protocol::Command_SetDeviceTransform_t* transforms, double displayFrequency) noexcept;
 
 private:
     [[nodiscard]] double now() const;
@@ -67,14 +68,15 @@ private:
     std::mutex m_poseStateMutex;
     double m_lastThinnedPoseTime[recording::k_MAX_DEVICES] = {};
     double m_lastAppliedTime[recording::k_MAX_DEVICES] = {};
+    double m_lastLatencyTime = -1e9;
     bool m_hasFrame[recording::k_MAX_DEVICES] = {};
     recording::FrameRecord m_frames[recording::k_MAX_DEVICES] = {};
 
     // for the frame thread alone
     recording::TransformRecord m_transforms[recording::k_MAX_DEVICES] = {};
+    bool m_hasTransform[recording::k_MAX_DEVICES] = {};
     std::string m_deviceTexts[recording::k_MAX_DEVICES];
     double m_lastDeviceScanTime = -1e9;
-    double m_lastLatencyTime = -1e9;
     double m_displayFrequency = 0.0;
     uint64_t m_reportedDropped = 0;
     bool m_reportedStopped = false;

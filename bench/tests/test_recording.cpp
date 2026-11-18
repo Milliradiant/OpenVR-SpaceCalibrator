@@ -211,9 +211,10 @@ static void theOldestRecordingsGoFirst(const fs::path& directory)
     CHECK(!fs::exists(recordings / "poses_20261101_100000.screc") && fs::exists(recordings / "poses_20261102_100000.screc"));
     CHECK(fs::exists(recordings / "notes.txt") && fs::exists(recordings / "poses_20261101_090000.txt"));
 
-    // a new recording in the folder makes its room first, and is named for when it began
+    // a new recording in the folder makes its room first (the limit less a quarter of it, for what it will write before the
+    // folder is next looked at), and is named for when it began
     Writer writer;
-    CHECK(writer.open(recordings, 5000));
+    CHECK(writer.open(recordings, 8000));
     CHECK(writer.isOpen());
     const std::string name = writer.path().filename().string();
     CHECK(name.rfind("poses_", 0) == 0 && name.size() == std::string("poses_20261118_142500.screc").size() && writer.path().extension() == ".screc");
@@ -290,6 +291,60 @@ static void whatNothingWritesOutIsDroppedNotKept(const fs::path& directory)
     CHECK(kept * 72 <= 16u * 1024 * 1024);
 }
 
+static void aSessionGrowsOnlyAsFarAsTheFolderMay(const fs::path& directory)
+{
+    const fs::path recordings = directory / "limit";
+    fs::create_directories(recordings);
+    const auto make = [&](const char* name, size_t size) {
+        std::ofstream out(recordings / name, std::ios::binary);
+        out << std::string(size, 'x');
+    };
+    make("poses_20261101_100000.screc", 60000);
+    make("poses_20261102_100000.screc", 60000);
+    make("poses_20261103_100000.screc", 60000);
+    constexpr uint64_t k_LIMIT = 200000;
+    const auto folderSize = [&] {
+        uint64_t total = 0;
+        for (const auto& entry : fs::directory_iterator(recordings)) {
+            total += entry.file_size();
+        }
+        return total;
+    };
+
+    Writer writer;
+    CHECK(writer.open(recordings, k_LIMIT));
+    const fs::path file = writer.path();
+    // room is made for what the new one writes first: the oldest goes at once, the other two stay for now
+    CHECK(!fs::exists(recordings / "poses_20261101_100000.screc") && fs::exists(recordings / "poses_20261102_100000.screc"));
+
+    uint64_t largest = 0;
+    int written = 0;
+    for (; written < 5000 && writer.isOpen(); written++) {
+        writer.pose(0.004 * written, 1, somePose(written));
+        if (written % 50 == 49) {
+            writer.flush(true); // 3600 bytes at a time
+            largest = std::max(largest, folderSize());
+        }
+    }
+    // the older ones went one by one as it grew, the folder never held more than its limit, and the recording ended at it
+    CHECK(largest <= k_LIMIT);
+    CHECK(!writer.isOpen() && !writer.error().empty());
+    CHECK(written < 5000);
+    CHECK(!fs::exists(recordings / "poses_20261102_100000.screc") && !fs::exists(recordings / "poses_20261103_100000.screc"));
+    CHECK(fs::file_size(file) <= k_LIMIT && fs::file_size(file) > k_LIMIT - 4000);
+    writer.pose(100.0, 1, somePose(0)); // ended: nothing more is taken
+    writer.close();
+    const size_t kept = readAll(file).size();
+    CHECK(kept * 72 + 8 == fs::file_size(file));
+
+    // two recordings begun within the same second have a file each
+    Writer first, second;
+    CHECK(first.open(recordings, 10 * k_LIMIT) && second.open(recordings, 10 * k_LIMIT));
+    CHECK(first.path() != second.path());
+    first.close();
+    second.close();
+}
+
 int main()
 {
     const fs::path directory = fs::temp_directory_path() / ("spacecal_recording_test_" + std::to_string(std::rand()));
@@ -302,6 +357,7 @@ int main()
     theOldestRecordingsGoFirst(directory);
     posesFromManyThreadsAllArrive(directory);
     whatNothingWritesOutIsDroppedNotKept(directory);
+    aSessionGrowsOnlyAsFarAsTheFolderMay(directory);
 
     fs::remove_all(directory);
     if (g_failures) {

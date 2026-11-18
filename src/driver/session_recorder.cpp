@@ -1,7 +1,6 @@
 #include "session_recorder.h"
 
 #include "constants.h"
-#include "latency_estimator.h"
 #include "log.h"
 #include <cstring>
 #include <ctime>
@@ -68,6 +67,25 @@ void SessionRecorder::start(const std::filesystem::path& directory)
     }
     m_reportedStopped = false;
     m_reportedDropped = 0;
+    m_displayFrequency = 0.0;
+    m_lastDeviceScanTime = -1e9;
+    m_fullRateDevices = 1;
+    m_seenDevices = 0;
+    m_targetDevice = vr::k_unTrackedDeviceIndexInvalid;
+    for (size_t i = 0; i < recording::k_MAX_DEVICES; i++) {
+        m_hasTransform[i] = false;
+        m_deviceTexts[i].clear();
+    }
+    {
+        // a new recording starts from nothing known: each device's frame and each timer are written afresh
+        std::lock_guard<std::mutex> lock(m_poseStateMutex);
+        m_lastLatencyTime = -1e9;
+        for (size_t i = 0; i < recording::k_MAX_DEVICES; i++) {
+            m_lastThinnedPoseTime[i] = -1e9;
+            m_lastAppliedTime[i] = -1e9;
+            m_hasFrame[i] = false;
+        }
+    }
     m_writerThread = std::thread([this] { writerLoop(); });
 
     LOG_OPENVR_INFO("Recording this session's poses to \"{}\" (the recordings together are kept under {} MB)", m_writer.path().string(), maxMegabytes);
@@ -215,7 +233,30 @@ try {
 } catch (...) {
 }
 
-void SessionRecorder::onFrame(const ipc::protocol::Command_SetDeviceTransform_t* transforms, LatencyEstimator& latencyEstimator, double displayFrequency) noexcept
+void SessionRecorder::onLatency(vr::TrackedDeviceIndex_t referenceDevice, vr::TrackedDeviceIndex_t targetDevice, double latency, double confidence) noexcept
+try {
+    if (!m_writer.isOpen() || referenceDevice >= recording::k_MAX_DEVICES || targetDevice >= recording::k_MAX_DEVICES) {
+        return;
+    }
+
+    const double time = now();
+    {
+        std::lock_guard<std::mutex> lock(m_poseStateMutex);
+        if (time - m_lastLatencyTime < k_RECORD_LATENCY_INTERVAL_SEC) {
+            return;
+        }
+        m_lastLatencyTime = time;
+    }
+
+    recording::LatencyRecord record;
+    record.referenceDevice = static_cast<uint8_t>(referenceDevice);
+    record.latency = latency;
+    record.confidence = confidence;
+    m_writer.latency(time, static_cast<uint8_t>(targetDevice), record);
+} catch (...) {
+}
+
+void SessionRecorder::onFrame(const ipc::protocol::Command_SetDeviceTransform_t* transforms, double displayFrequency) noexcept
 try {
     if (!m_writer.isOpen()) {
         if (m_writerThread.joinable() && !m_reportedStopped) {
@@ -249,9 +290,10 @@ try {
         record.rotation[3] = transform.rotation.z;
         record.scale = transform.scale;
 
-        // a device the overlay never touched has the same zeroes as the record this starts from, and writes nothing
-        const bool untouched = record.flags == 0 && record.referenceDevice == 0 && record.targetDevice == 0 && record.scale == 0.0;
-        if (!untouched && !(record == m_transforms[i])) {
+        // a device's transform is recorded from the first time the overlay enables one for it, and whenever it changes from then
+        // on, switching off included. a device it never calibrates writes nothing, whatever its unused transform holds
+        if ((transform.enabled() || m_hasTransform[i]) && !(m_hasTransform[i] && record == m_transforms[i])) {
+            m_hasTransform[i] = true;
             m_transforms[i] = record;
             m_writer.transform(time, static_cast<uint8_t>(i), record);
         }
@@ -292,14 +334,6 @@ try {
                 m_writer.device(time, static_cast<uint8_t>(i), serial, model, trackingSystem, deviceClass);
             }
         }
-    }
-
-    if (referenceDevice < recording::k_MAX_DEVICES && targetDevice < recording::k_MAX_DEVICES && time - m_lastLatencyTime >= k_RECORD_LATENCY_INTERVAL_SEC) {
-        m_lastLatencyTime = time;
-        recording::LatencyRecord record;
-        record.referenceDevice = static_cast<uint8_t>(referenceDevice);
-        record.latency = latencyEstimator.get_latency(referenceDevice, targetDevice, record.confidence);
-        m_writer.latency(time, static_cast<uint8_t>(targetDevice), record);
     }
 
     if (displayFrequency != m_displayFrequency && displayFrequency > 0.0) {
