@@ -281,6 +281,23 @@ bool Reference::at(double time, Pose& calibration, Eigen::Vector3d& feet) const
     return true;
 }
 
+double Reference::feetDistance(const Pose& one, const Pose& other, const Eigen::Vector3d& feet) const
+{
+    const double spread = options.feetSpread;
+    const Eigen::Vector3d points[5] = {
+        feet,
+        feet + Eigen::Vector3d(spread, 0.0, 0.0),
+        feet - Eigen::Vector3d(spread, 0.0, 0.0),
+        feet + Eigen::Vector3d(0.0, 0.0, spread),
+        feet - Eigen::Vector3d(0.0, 0.0, spread),
+    };
+    double worst = 0.0;
+    for (const Eigen::Vector3d& point : points) {
+        worst = std::max(worst, (one * point - other * point).norm());
+    }
+    return worst;
+}
+
 double Reference::feetError(double time, const Pose& calibration) const
 {
     Pose reference;
@@ -288,7 +305,7 @@ double Reference::feetError(double time, const Pose& calibration) const
     if (!at(time, reference, feet)) {
         return -1.0;
     }
-    return (calibration * feet - reference * feet).norm();
+    return feetDistance(calibration, reference, feet);
 }
 
 double Reference::mountFeetError(const Session& session, double time, const Pose& candidate) const
@@ -305,7 +322,7 @@ double Reference::mountFeetError(const Session& session, double time, const Pose
     // the world calibration each mount gives with the two devices where they were: C = H * L * T^-1
     const Pose withCandidate = head * candidate * tracker.inverse();
     const Pose withReference = head * mount.mount * tracker.inverse();
-    return (withCandidate * feet - withReference * feet).norm();
+    return feetDistance(withCandidate, withReference, feet);
 }
 
 Reference solveReference(const Session& session, const ReferenceOptions& options)

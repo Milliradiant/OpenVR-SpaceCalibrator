@@ -82,6 +82,7 @@ ReferenceOptions referenceOptions(const Arguments& arguments)
     ReferenceOptions options;
     options.smoothWindow = arguments.number("--window", options.smoothWindow);
     options.feetBelowTarget = arguments.number("--feet", options.feetBelowTarget);
+    options.feetSpread = arguments.number("--spread", options.feetSpread);
     options.usePoseTimeOffset = arguments.get("--pose-time") != nullptr;
     return options;
 }
@@ -227,7 +228,7 @@ int commandReference(const Arguments& arguments)
     for (size_t i = 0; i < reference.times.size(); i++) {
         scatter.push_back(reference.feetError(reference.times[i], reference.instant[i]));
     }
-    std::printf("world calibration, judged %.1f m below the target (the feet):\n", reference.options.feetBelowTarget);
+    std::printf("world calibration, judged at the feet (%.1f m below the target and %.1f m to each side of that, the worst of them):\n", reference.options.feetBelowTarget, reference.options.feetSpread);
     printDistribution("one pose pair against the reference", scatter, 1e3, "mm");
 
     // how far the reference itself moved: the two tracking systems drifting against each other
@@ -321,6 +322,44 @@ int commandScore(const Arguments& arguments)
         }
         std::printf("what the driver applied under relative calibration (its blend, recorded %zu times):\n", target.applied.size());
         printDistribution("feet error", errors, 1e3, "mm");
+
+        // stretch by stretch of relative calibration: how good what it applied was, and whether it followed anything at all
+        for (size_t i = 0; i < events.size(); i++) {
+            if (!(events[i].enabled && events[i].relative) || (i > 0 && events[i - 1].enabled && events[i - 1].relative)) {
+                continue;
+            }
+            size_t last = i;
+            while (last + 1 < events.size() && events[last + 1].enabled && events[last + 1].relative) {
+                last++;
+            }
+            const double begin = events[i].time;
+            const double end = last + 1 < events.size() ? events[last + 1].time : session.duration;
+
+            std::vector<double> stretch;
+            const AppliedEvent* first = nullptr;
+            double moved = 0.0, atEnd = -1.0;
+            for (const AppliedEvent& applied : target.applied) {
+                if (applied.time < begin || applied.time >= end) {
+                    continue;
+                }
+                Pose unused;
+                Eigen::Vector3d feet;
+                if (!reference.at(applied.time, unused, feet)) {
+                    continue;
+                }
+                if (!first) {
+                    first = &applied;
+                }
+                moved = std::max(moved, reference.feetDistance(applied.calibration, first->calibration, feet));
+                atEnd = reference.feetError(applied.time, applied.calibration);
+                stretch.push_back(atEnd);
+            }
+            if (stretch.empty()) {
+                continue;
+            }
+            std::printf("  %s  for %6.1f s, %zu calibrations from the overlay: feet %.1f mm (median), %.1f at its end; it moved %.1f mm from where it began\n",
+                clock(begin).c_str(), end - begin, last - i + 1, 1e3 * median(stretch), 1e3 * atEnd, 1e3 * moved);
+        }
     }
     return 0;
 }
@@ -399,6 +438,8 @@ int commandCheck(const Arguments& arguments)
             } else {
                 std::printf("median %.1f, from %.1f to %.1f ms\n", median(latencies) * 1e3, percentile(latencies, 0.1) * 1e3, percentile(latencies, 0.9) * 1e3);
             }
+            // the driver blends toward a relative calibration at a rate times this confidence: at zero it does not move
+            std::printf("  its confidence, which the driver's blend is multiplied by: median %.2f, 90%% %.2f, most %.2f\n", median(confidences), percentile(confidences, 0.9), percentile(confidences, 1.0));
         }
     }
     return 0;

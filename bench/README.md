@@ -55,8 +55,13 @@ With the whole session to look at, three things can be solved far better than an
 3. **The world calibration over time**, `H L T^-1` for every pose pair, smoothed over a few seconds and split where it steps
    (a playspace recentre, a tracking system losing its place).
 
-Errors are given **at the feet**, 1.5 m below the target device: a calibration's rotation error is invisible at the device and
-is the whole of what is seen at the far end of a body.
+Errors are given **at the feet**: 1.5 m below the target device and half a metre to each side of that point, the worst of the
+five. A calibration's rotation error is invisible at the device and is the whole of what is seen at the far end of a body, and
+one turned about the vertical moves nothing right under the device.
+
+`score` also follows what the driver applied under relative calibration, stretch by stretch: how far off it was, and how far it
+moved from where it began. `check` gives the confidence of the driver's latency estimate, which its blend toward a relative
+calibration is multiplied by.
 
 ### The replay
 

@@ -23,6 +23,7 @@ struct ReferenceOptions {
     double smoothWindow = 8.0; // the reference world calibration is the mean over this many seconds either way
     double jumpThreshold = 0.03; // a step of the world calibration this large at the feet, between the 2 s before and after, is a jump
     double feetBelowTarget = 1.5; // where an error is judged: this far below the target device, metres
+    double feetSpread = 0.5; // and this far to each side of that point: a calibration turned about the vertical moves nothing right under it
     bool usePoseTimeOffset = false; // take a pose to be of the time the driver said (its poseTimeOffset), not of when it came in
 };
 
@@ -59,6 +60,8 @@ struct Reference {
     [[nodiscard]] bool at(double time, Pose& calibration, Eigen::Vector3d& feet) const;
     // how far a world calibration puts the feet from where the reference does, metres. negative where there is no reference
     [[nodiscard]] double feetError(double time, const Pose& calibration) const;
+    // how far two calibrations put the feet apart: the worst of the point under the target and four around it
+    [[nodiscard]] double feetDistance(const Pose& one, const Pose& other, const Eigen::Vector3d& feet) const;
     // how far a mount (a relative calibration) puts the feet from where the reference mount does, with the head as it was at a
     // time. negative where there is no reference
     [[nodiscard]] double mountFeetError(const Session& session, double time, const Pose& mount) const;
