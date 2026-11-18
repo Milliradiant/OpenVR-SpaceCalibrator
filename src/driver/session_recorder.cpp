@@ -79,7 +79,6 @@ void SessionRecorder::start(const std::filesystem::path& directory)
     {
         // a new recording starts from nothing known: each device's frame and each timer are written afresh
         std::lock_guard<std::mutex> lock(m_poseStateMutex);
-        m_lastLatencyTime = -1e9;
         for (size_t i = 0; i < recording::k_MAX_DEVICES; i++) {
             m_lastThinnedPoseTime[i] = -1e9;
             m_lastAppliedTime[i] = -1e9;
@@ -230,29 +229,6 @@ try {
     record.translation[1] = translation.y();
     record.translation[2] = translation.z();
     m_writer.applied(time, static_cast<uint8_t>(deviceIndex), record);
-} catch (...) {
-}
-
-void SessionRecorder::onLatency(vr::TrackedDeviceIndex_t referenceDevice, vr::TrackedDeviceIndex_t targetDevice, double latency, double confidence) noexcept
-try {
-    if (!m_writer.isOpen() || referenceDevice >= recording::k_MAX_DEVICES || targetDevice >= recording::k_MAX_DEVICES) {
-        return;
-    }
-
-    const double time = now();
-    {
-        std::lock_guard<std::mutex> lock(m_poseStateMutex);
-        if (time - m_lastLatencyTime < k_RECORD_LATENCY_INTERVAL_SEC) {
-            return;
-        }
-        m_lastLatencyTime = time;
-    }
-
-    recording::LatencyRecord record;
-    record.referenceDevice = static_cast<uint8_t>(referenceDevice);
-    record.latency = latency;
-    record.confidence = confidence;
-    m_writer.latency(time, static_cast<uint8_t>(targetDevice), record);
 } catch (...) {
 }
 

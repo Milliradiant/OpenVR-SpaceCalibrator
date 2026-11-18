@@ -173,14 +173,24 @@ bool simulate(const std::filesystem::path& file, const SimulateOptions& options,
 
     // each device's poses come in at its own rate, each of where the device was its own latency ago
     double nextReference = 0.0, nextTarget = 0.0013;
+    const Pose frameStep { Eigen::Quaterniond(Eigen::AngleAxisd(1.5 / k_DEG, Eigen::Vector3d::UnitY())), Eigen::Vector3d(0.15, 0.02, -0.12) };
+    bool targetStepped = false, referenceStepped = false;
     while (nextReference < options.duration || nextTarget < options.duration) {
         if (nextReference <= nextTarget) {
             const double time = nextReference, of = time - options.referenceLatency;
             const Pose raw = noisy(world.head(of), options.referencePositionNoise, options.referenceRotationNoise, rng);
+            if (options.referenceFrameStepTime > 0.0 && !referenceStepped && time >= options.referenceFrameStepTime) {
+                referenceStepped = true;
+                writer.frame(time, 0, frameOf(frameStep));
+            }
             writer.pose(time, 0, recordOf(raw, world.head(of - span), world.head(of + span), 2.0 * span, 0.0));
             nextReference += 1.0 / options.referenceRate + jitter(rng);
         } else {
             const double time = nextTarget, of = time - options.targetLatency;
+            if (options.targetFrameStepTime > 0.0 && !targetStepped && time >= options.targetFrameStepTime) {
+                targetStepped = true;
+                writer.frame(time, 1, frameOf(frameStep * world.targetWorldFromDriver));
+            }
             const Pose raw = targetDriverFromWorld * noisy(world.tracker(of), options.targetPositionNoise, options.targetRotationNoise, rng);
             writer.pose(time, 1, recordOf(raw, targetDriverFromWorld * world.tracker(of - span), targetDriverFromWorld * world.tracker(of + span), 2.0 * span, -options.reportedTargetAge));
             nextTarget += 1.0 / options.targetRate + jitter(rng);

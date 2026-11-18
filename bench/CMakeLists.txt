@@ -32,14 +32,20 @@ target_include_directories(overlay_calibration PUBLIC
     ${APP}/vendor/eigen)
 target_compile_definitions(overlay_calibration PUBLIC IS_OVERLAY EIGEN_HAS_STD_RESULT_OF=0)
 
+# the driver's relative calibration, as the driver builds it but for OpenVR's types, which it takes as the overlay has them
+add_library(driver_relative STATIC ${APP}/src/driver/relative_calibration.cpp)
+target_include_directories(driver_relative PUBLIC ${APP}/src/driver)
+target_link_libraries(driver_relative PUBLIC overlay_calibration)
+
 add_executable(spacecal-bench
     src/main.cpp
     src/session.cpp
     src/reference.cpp
     src/simulate.cpp
-    src/replay.cpp)
+    src/replay.cpp
+    src/replay_driver.cpp)
 target_include_directories(spacecal-bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(spacecal-bench PRIVATE recording overlay_calibration)
+target_link_libraries(spacecal-bench PRIVATE recording overlay_calibration driver_relative)
 if(NOT MSVC)
     target_compile_options(spacecal-bench PRIVATE -Wall -Wextra)
     # a build that runs on a machine other than the one it was made on
@@ -66,4 +72,9 @@ target_include_directories(test_session_recorder PRIVATE
 target_compile_definitions(test_session_recorder PRIVATE IS_DRIVER EIGEN_HAS_STD_RESULT_OF=0)
 target_link_libraries(test_session_recorder PRIVATE recording Threads::Threads)
 add_test(NAME session_recorder COMMAND test_session_recorder)
+
+# the driver's relative calibration on made-up poses
+add_executable(test_relative_calibration tests/test_relative_calibration.cpp)
+target_link_libraries(test_relative_calibration PRIVATE driver_relative)
+add_test(NAME relative_calibration COMMAND test_relative_calibration)
 add_test(NAME bench COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:spacecal-bench> -DWORK=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bench.cmake)

@@ -1,31 +1,13 @@
 #pragma once
 
 #include "ipc_server.h"
-#include "latency_estimator.h"
+#include "relative_calibration.h"
 #include "session_recorder.h"
 #include <Eigen/Geometry>
 #include <chrono>
 #include <openvr_driver.h>
 
 namespace spacecal {
-
-enum class DeltaSize {
-    TINY,
-    SMALL,
-    LARGE
-};
-
-struct Pose_t {
-    Eigen::Quaterniond rot = Eigen::Quaterniond::Identity();
-    Eigen::Vector3d pos = Eigen::Vector3d::Zero();
-};
-
-struct DeviceCalibration_t {
-    Pose_t pose;
-    DeltaSize eDeltaSize = DeltaSize::TINY;
-    bool hasCalibration = false;
-    std::chrono::steady_clock::time_point lastUpdateTime {};
-};
 
 class ServerTrackedDeviceProvider : public vr::IServerTrackedDeviceProvider {
 public:
@@ -60,20 +42,15 @@ public:
 
 private:
     void applyCalibrationToPose(vr::DriverPose_t& pose, vr::HmdQuaternion_t rotation, vr::HmdVector3d_t pos, double scale, bool calibrateMotionVecs);
-    double getTransformRate(DeltaSize delta) const;
-    DeltaSize getTransformDeltaSize(DeltaSize priorDelta, const Eigen::Vector3d& deviceWorldPos, const Pose_t& current, const Pose_t& target) const;
 
 private:
     ipc::Server m_ipcServer;
-    ipc::protocol::Command_SetAlignmentSpeedParams_t m_alignmentParams = {};
-
     double m_fVsyncPredictionTime = 0.0;
     ipc::protocol::SharedData_HmdMetadata m_hmdMetaData = {};
 
     ipc::protocol::Command_SetDeviceTransform_t m_transforms[vr::k_unMaxTrackedDeviceCount] = {};
-    DeviceCalibration_t m_cachedCalibrations[vr::k_unMaxTrackedDeviceCount] = {}; // cache of calibrations for relative calibration
     vr::DriverPose_t m_poses[vr::k_unMaxTrackedDeviceCount] = {}; // raw poses
-    LatencyEstimator m_latencyEstimator;
+    RelativeCalibration m_relativeCalibration;
     SessionRecorder m_sessionRecorder;
     friend class ipc::Server;
 };

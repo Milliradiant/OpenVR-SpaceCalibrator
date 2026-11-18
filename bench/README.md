@@ -26,8 +26,8 @@ A recording holds, each with the time it happened:
   anything (position, rotation, velocities, the pose's stated age, validity), and every other device's five times a second;
 - each device's world-from-driver and driver-from-head frames, when they change;
 - every calibration the overlay hands the driver, and the calibration the driver actually applies as it blends toward it;
-- the latency between the two devices as the driver used it (under relative calibration), and each device's serial, model
-  and tracking system.
+- each device's serial, model and tracking system. (Recordings of drivers before the latency estimate was taken out also have
+  the latency the driver used.)
 
 The format is `src/common/pose_recording.h`: a magic, then records of a 12 byte header (type, device, payload length, time) and
 a payload. A reader skips record types it does not know, and a file cut short by a crash reads up to its last whole record.
@@ -40,6 +40,7 @@ spacecal-bench reference RECORDING   the session's calibration solved in hindsig
 spacecal-bench score RECORDING       what was applied during the session, judged against that
 spacecal-bench check RECORDING       each driver's velocities and pose ages against its own poses
 spacecal-bench replay RECORDING      the overlay's calibration code run over the recording, judged the same way
+spacecal-bench driver RECORDING      the driver's relative calibration code run over the recording, judged the same way
 spacecal-bench simulate RECORDING    write a made-up session with a known answer
 ```
 
@@ -60,8 +61,8 @@ five. A calibration's rotation error is invisible at the device and is the whole
 one turned about the vertical moves nothing right under the device.
 
 `score` also follows what the driver applied under relative calibration, stretch by stretch: how far off it was, and how far it
-moved from where it began. `check` gives the confidence of the driver's latency estimate, which its blend toward a relative
-calibration is multiplied by.
+moved from where it began. For a recording of a driver that still had a latency estimate, `check` gives its confidence, which
+that driver's blend toward a relative calibration was multiplied by.
 
 ### The replay
 
@@ -70,13 +71,25 @@ memory, the configuration and the log (`stubs/`, `src/replay.cpp`), and runs it 
 the same samples at the same times lead to the same calibrations, accepted and rejected for the same reasons. A change to the
 calibration code is judged by building the bench with it and replaying the same recordings before and after.
 
+`driver` does the same for the driver's side of a relative calibration (`src/driver/relative_calibration.cpp`, built into the
+bench as it is): every pose of the two devices goes through it in the order and at the times they came in, with the calibrations
+the overlay set live, or with `--reference-mount` the hindsight mount throughout, which shows the driver's part alone. It also
+compares the calibration the recorded driver began each stretch of relative calibration with against this code's at the same
+pose: for a recording made by the same driver code the two are the same. `replay --driver` runs the driver's code on what the
+replayed overlay sets: the two together are what would have reached SteamVR.
+
 ### The simulation
 
 `simulate` writes a session through the same writer the driver uses, with a mount and time offset it states in the recording.
-The bench's test holds `reference` to finding them: within 0.05 degrees, 1 mm and 1 ms.
+The bench's test holds `reference` to finding them: within 0.05 degrees, 1 mm and 1 ms. `--frame-step S` and
+`--reference-frame-step S` have a tracking system re-base its world at that time (the device's world-from-driver steps while its
+driver pose runs on), which the overlay's code has to come through: a world calibration recovered at once, a relative
+calibration's mount left where it was.
 
 ## Tests
 
-`ctest` runs three: the recording's writer and reader against each other (`tests/test_recording.cpp`), the driver's recorder
+`ctest` runs four: the recording's writer and reader against each other (`tests/test_recording.cpp`); the driver's recorder
 as the driver builds it against a stand-in for SteamVR's settings and device properties, called from several threads at once
-(`tests/test_session_recorder.cpp`), and the reference on a simulated session.
+(`tests/test_session_recorder.cpp`); the driver's relative calibration on made-up poses, which has to be the calibration the
+poses were made with and to follow it when it moves (`tests/test_relative_calibration.cpp`); and the bench on simulated sessions:
+the reference against the known answer, the overlay's and the driver's code through a step of each tracking system's frame.

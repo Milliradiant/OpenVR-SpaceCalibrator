@@ -21,18 +21,6 @@ vr::EVRInitError ServerTrackedDeviceProvider::Init(vr::IVRDriverContext* pDriver
 
     LOG_OPENVR_INFO("Starting SpaceCalibrator-Nova. Compiled against OpenVR driver API {}.{}.{}", vr::k_nSteamVRVersionMajor, vr::k_nSteamVRVersionMinor, vr::k_nSteamVRVersionBuild);
 
-    m_alignmentParams.thr_rot_tiny = 0.1f * (EIGEN_PI / 180.0f);
-    m_alignmentParams.thr_rot_small = 1.0f * (EIGEN_PI / 180.0f);
-    m_alignmentParams.thr_rot_large = 5.0f * (EIGEN_PI / 180.0f);
-
-    m_alignmentParams.thr_trans_tiny = 0.1f / 1000.0; // mm
-    m_alignmentParams.thr_trans_small = 1.0f / 1000.0; // mm
-    m_alignmentParams.thr_trans_large = 20.0f / 1000.0; // mm
-
-    m_alignmentParams.align_speed_tiny = 0.05f;
-    m_alignmentParams.align_speed_small = 0.2f;
-    m_alignmentParams.align_speed_large = 2.0f;
-
     m_sessionRecorder.start(util::getSpaceCalibratorConfigDir() / "recordings");
 
     m_ipcServer.Connect(this);
@@ -61,7 +49,6 @@ void ServerTrackedDeviceProvider::RunFrame()
     vr::PropertyContainerHandle_t hHmdContainer = vr::VRProperties()->TrackedDeviceToPropertyContainer(vr::k_unTrackedDeviceIndex_Hmd);
     const double displayFrequency = vr::VRProperties()->GetFloatProperty(hHmdContainer, vr::Prop_DisplayFrequency_Float);
     m_fVsyncPredictionTime = 1.0 / displayFrequency;
-    m_latencyEstimator.set_hmd_refresh_rate(m_fVsyncPredictionTime);
 
     // device state may get desynced so we update it here
     vr::TrackedDevicePose_t rawPoses[vr::k_unMaxTrackedDeviceCount] = {};
@@ -128,113 +115,6 @@ inline Eigen::Vector3d eigenVecFromHmdVec(const double pos[3])
     return Eigen::Vector3d(pos[0], pos[1], pos[2]);
 }
 
-inline DeltaSize maxDelta(DeltaSize a, DeltaSize b)
-{
-    return (static_cast<int>(a) > static_cast<int>(b)) ? a : b;
-}
-
-DeltaSize ServerTrackedDeviceProvider::getTransformDeltaSize(DeltaSize priorDelta, const Eigen::Vector3d& deviceWorldPos, const Pose_t& current, const Pose_t& target) const
-{
-    const Eigen::Vector3d srcPos = current.pos + current.rot * deviceWorldPos;
-    const Eigen::Vector3d targetPos = target.pos + target.rot * deviceWorldPos;
-
-    const double transDelta = (srcPos - targetPos).squaredNorm();
-    const double rotDelta = current.rot.angularDistance(target.rot);
-
-    DeltaSize transLevel, rotLevel;
-
-    if (transDelta > m_alignmentParams.thr_trans_large)
-        transLevel = DeltaSize::LARGE;
-    else if (transDelta > m_alignmentParams.thr_trans_small)
-        transLevel = DeltaSize::SMALL;
-    else
-        transLevel = DeltaSize::TINY;
-
-    if (rotDelta > m_alignmentParams.thr_rot_large)
-        rotLevel = DeltaSize::LARGE;
-    else if (rotDelta > m_alignmentParams.thr_rot_small)
-        rotLevel = DeltaSize::SMALL;
-    else
-        rotLevel = DeltaSize::TINY;
-
-    if (transLevel == DeltaSize::TINY && rotLevel == DeltaSize::TINY)
-        return DeltaSize::TINY;
-
-    return maxDelta(priorDelta, maxDelta(transLevel, rotLevel));
-}
-
-double ServerTrackedDeviceProvider::getTransformRate(DeltaSize delta) const
-{
-    switch (delta) {
-    case DeltaSize::TINY:
-        return m_alignmentParams.align_speed_tiny;
-    case DeltaSize::SMALL:
-        return m_alignmentParams.align_speed_small;
-    default:
-        return m_alignmentParams.align_speed_large;
-    }
-}
-
-// lerps between two calibrations by lerp factor % around local point
-inline Pose_t interpolatePoseAround(double lerp, const Eigen::Vector3d& localPoint, const Pose_t& current, const Pose_t& target)
-{
-    const Eigen::Vector3d initialWorld = current.pos + current.rot * localPoint;
-    const Eigen::Vector3d targetWorld = target.pos + target.rot * localPoint;
-    const Eigen::Vector3d finalWorld = initialWorld * (1.0 - lerp) + targetWorld * lerp;
-
-    Eigen::Quaterniond rot = current.rot.slerp(lerp, target.rot);
-    Eigen::Vector3d pos = finalWorld - rot * localPoint;
-
-    return Pose_t { .rot = rot, .pos = pos };
-}
-
-inline Eigen::Affine3d getWorldFromDriverPose(const vr::DriverPose_t& pose, double fPredictedSecondsToPhotonsFromNow = 0.0)
-{
-    Eigen::Quaterniond baseRot = eigenFromHmdQuat(pose.qRotation);
-    Eigen::Vector3d basePos = eigenVecFromHmdVec(pose.vecPosition);
-
-    // @NOTE: ignoring poseTimeOffset because hardware lies :(
-    // double deltaTime = -pose.poseTimeOffset + fPredictedSecondsToPhotonsFromNow;
-    double deltaTime = fPredictedSecondsToPhotonsFromNow;
-
-    constexpr double k_PREDICTION_MIN_DELTA_TIME = 0.0001; // 0.1ms
-    constexpr double k_PREDICTION_MIN_VELOCITY = 0.00001; // 0.00001 rad/s
-
-    // we need to apply pose prediction here or the poses for relative calibration will be off.
-
-    // kinematic displacement for constant acceleration
-    // we assume constant accel and velocity as we have instantaneous vel and accel
-    // taking an integral, as we approach the limit 0, we're effectively splitting the equation into multiple small units until they're infinitely small
-    // suppose instead of taking the limit to 0 we take the limit to HMD_REFRESH_RATE instead, if we integrate using that assumption we're effectively
-    // taking multiple instantaneous samples of the velocity and acceleration, so we can assume constant acceleration and velocity here for prediction purposes
-
-    if (deltaTime > k_PREDICTION_MIN_DELTA_TIME) {
-        // s = ut + (1/2)at^2
-        Eigen::Vector3d vel = eigenVecFromHmdVec(pose.vecVelocity);
-        Eigen::Vector3d accel = eigenVecFromHmdVec(pose.vecAcceleration);
-        basePos += (vel * deltaTime) + (0.5 * accel * deltaTime * deltaTime);
-
-        // angular prediction (rotation)
-        // NOTE we IGNORE angular accel because its too noisy to be useful for prediction!
-        Eigen::Vector3d angVel = eigenVecFromHmdVec(pose.vecAngularVelocity);
-        double angVelMag = angVel.norm();
-        if (angVelMag > k_PREDICTION_MIN_VELOCITY) {
-            Eigen::Vector3d axis = angVel / angVelMag;
-            double angle = angVelMag * deltaTime;
-            Eigen::Quaterniond deltaRot(Eigen::AngleAxisd(angle, axis));
-            baseRot = deltaRot * baseRot;
-        }
-    }
-
-    Eigen::Quaterniond worldFromDriverRot = eigenFromHmdQuat(pose.qWorldFromDriverRotation);
-    Eigen::Vector3d worldFromDriverPos = eigenVecFromHmdVec(pose.vecWorldFromDriverTranslation);
-
-    Eigen::Quaterniond rot = worldFromDriverRot * baseRot;
-    Eigen::Vector3d pos = worldFromDriverPos + worldFromDriverRot * basePos;
-
-    return Eigen::Translation3d(pos) * rot;
-}
-
 bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex_t unWhichDevice, vr::DriverPose_t& newPose)
 {
     // bounds check, as sometimes the id is invalid?
@@ -245,7 +125,6 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
     m_sessionRecorder.onPose(unWhichDevice, newPose);
 
     m_ipcServer.UpdatePose(unWhichDevice, newPose);
-    m_latencyEstimator.push_pose(unWhichDevice, newPose);
 
     vr::DriverPose_t& modifiedPose = newPose;
 
@@ -254,7 +133,7 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
     // the cached calibration belongs to the relative session it was blended in. drop it once that session ends, so the next one
     // starts from its own first calibration instead of blending its way out of a stale one
     if (!transform.enabled() || !transform.relativeCoordSystem()) {
-        m_cachedCalibrations[unWhichDevice].hasCalibration = false;
+        m_relativeCalibration.drop(unWhichDevice);
     }
 
     if (transform.hideContinuousTracker()) {
@@ -265,74 +144,17 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
         HandleQuirks(transform.quirks, modifiedPose);
 
         if (transform.relativeCoordSystem()) {
-            if (IsDeviceIndexValid(transform.unRelativeReferenceOpenvrDeviceId) && IsPoseValid(m_poses[transform.unRelativeReferenceOpenvrDeviceId]) && IsDeviceIndexValid(transform.unRelativeTargetOpenvrDeviceId) && IsPoseValid(m_poses[transform.unRelativeTargetOpenvrDeviceId])) {
-                const vr::DriverPose_t& refPose = m_poses[transform.unRelativeReferenceOpenvrDeviceId];
-                const vr::DriverPose_t& targetPose = m_poses[transform.unRelativeTargetOpenvrDeviceId];
-
-                // world-space pose of ref device (H')
-                Eigen::Affine3d refWorldNow = getWorldFromDriverPose(refPose, m_fVsyncPredictionTime);
-                // world-space pose of target device (T')
-                double latencyConfidence = 0.0;
-                double latency = m_latencyEstimator.get_latency(transform.unRelativeReferenceOpenvrDeviceId, transform.unRelativeTargetOpenvrDeviceId, latencyConfidence);
-                m_sessionRecorder.onLatency(transform.unRelativeReferenceOpenvrDeviceId, transform.unRelativeTargetOpenvrDeviceId, latency, latencyConfidence);
-                Eigen::Affine3d targetWorldNow = getWorldFromDriverPose(targetPose, m_fVsyncPredictionTime + latency);
-
-                // local-space calibration transform (C_L)
-                Eigen::Affine3d calibrationLocal = eigenTransFromHmdVec(transform.translation.v) * eigenFromHmdQuat(transform.rotation);
-
-                // To compute the calibration for now, we need to compute where we expect the tracker to be (by applying the local calibration),
-                // and then computing a mapping from the tracker's raw pose to the expected pose to get a calibration thats valid for now.
-
-                // T_H = H' * C_L
-                Eigen::Affine3d expectedTargetWorld = refWorldNow * calibrationLocal;
-
-                // C' = (T')^-1 * T_H
-                Eigen::Affine3d worldCalib = expectedTargetWorld * targetWorldNow.inverse();
-
-                // keep track of calibrations so that we can keep using them even when either the ref or target device lose tracking
-                // we write directly to blend target for free smoothing
-                auto now = std::chrono::steady_clock::now();
-
-                Pose_t targetCalib = {
-                    .rot = Eigen::Quaterniond(worldCalib.rotation()).normalized(),
-                    .pos = worldCalib.translation(),
-                };
-
-                if (!m_cachedCalibrations[unWhichDevice].hasCalibration) {
-                    m_cachedCalibrations[unWhichDevice] = {
-                        .pose = targetCalib,
-                        .eDeltaSize = DeltaSize::TINY,
-                        .hasCalibration = true,
-                        .lastUpdateTime = now,
-                    };
-                } else {
-                    double deltaTime = std::chrono::duration<double>(now - m_cachedCalibrations[unWhichDevice].lastUpdateTime).count();
-                    m_cachedCalibrations[unWhichDevice].lastUpdateTime = now;
-
-                    Eigen::Vector3d deviceWorldPos = targetWorldNow.translation();
-
-                    m_cachedCalibrations[unWhichDevice].eDeltaSize = getTransformDeltaSize(
-                        m_cachedCalibrations[unWhichDevice].eDeltaSize,
-                        deviceWorldPos,
-                        m_cachedCalibrations[unWhichDevice].pose,
-                        targetCalib);
-
-                    double lerp = deltaTime * getTransformRate(m_cachedCalibrations[unWhichDevice].eDeltaSize);
-                    lerp *= latencyConfidence;
-                    lerp = std::clamp(lerp, 0.0, 1.0);
-
-                    m_cachedCalibrations[unWhichDevice].pose = interpolatePoseAround(lerp, deviceWorldPos, m_cachedCalibrations[unWhichDevice].pose, targetCalib);
-                }
-            }
-
-            if (m_cachedCalibrations[unWhichDevice].hasCalibration) {
-                m_sessionRecorder.onApplied(unWhichDevice, m_cachedCalibrations[unWhichDevice].pose.rot, m_cachedCalibrations[unWhichDevice].pose.pos);
+            Pose_t calibration;
+            const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            const RelativeCalibration::Update update = m_relativeCalibration.update(unWhichDevice, transform, m_poses, nowSeconds, calibration);
+            if (update.hasCalibration) {
+                m_sessionRecorder.onApplied(unWhichDevice, calibration.rot, calibration.pos);
             }
 
             applyCalibrationToPose(
                 modifiedPose,
-                hmdQuatFromEigen(m_cachedCalibrations[unWhichDevice].pose.rot),
-                hmdVecFromEigenVec(m_cachedCalibrations[unWhichDevice].pose.pos),
+                hmdQuatFromEigen(calibration.rot),
+                hmdVecFromEigenVec(calibration.pos),
                 transform.scale,
                 transform.calibrateMotionVecs());
         } else {
@@ -415,6 +237,6 @@ void ServerTrackedDeviceProvider::RequestVirtualDesktopProps()
 
 void ServerTrackedDeviceProvider::SetAlignmentSpeedParams(ipc::protocol::Command_SetAlignmentSpeedParams_t& params)
 {
-    m_alignmentParams = params;
+    m_relativeCalibration.setAlignmentParams(params);
 }
 }

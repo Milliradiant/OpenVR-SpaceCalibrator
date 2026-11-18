@@ -21,7 +21,6 @@ constexpr int32_t k_RECORDINGS_DEFAULT_MAX_MB = 1024;
 constexpr double k_RECORD_THINNED_INTERVAL_SEC = 0.2; // a device the calibration does not use is recorded this often
 constexpr double k_RECORD_APPLIED_TARGET_INTERVAL_SEC = 0.1; // the calibration applied to the target device
 constexpr double k_RECORD_APPLIED_OTHER_INTERVAL_SEC = 1.0; // and to the tracking system's other devices
-constexpr double k_RECORD_LATENCY_INTERVAL_SEC = 0.2;
 constexpr double k_RECORD_DEVICE_SCAN_INTERVAL_SEC = 2.0;
 constexpr double k_RECORD_WRITE_INTERVAL_SEC = 0.25; // how often what was recorded goes to the file
 constexpr double k_RECORD_SYNC_INTERVAL_SEC = 2.0; // how much of a recording a crash of SteamVR can cost
@@ -42,9 +41,6 @@ public:
     void onPose(vr::TrackedDeviceIndex_t deviceIndex, const vr::DriverPose_t& pose) noexcept;
     // the world calibration just applied to a device under relative calibration. any thread
     void onApplied(vr::TrackedDeviceIndex_t deviceIndex, const Eigen::Quaterniond& rotation, const Eigen::Vector3d& translation) noexcept;
-    // the latency between the two devices that the driver just used for a relative calibration. any thread. the recorder is handed
-    // it and never asks the estimator itself: asking moves the estimate along, and a recording must not change what it records
-    void onLatency(vr::TrackedDeviceIndex_t referenceDevice, vr::TrackedDeviceIndex_t targetDevice, double latency, double confidence) noexcept;
     // once per driver frame, from the thread that runs it: what the overlay asks for and who the devices are
     void onFrame(const ipc::protocol::Command_SetDeviceTransform_t* transforms, double displayFrequency) noexcept;
 
@@ -68,7 +64,6 @@ private:
     std::mutex m_poseStateMutex;
     double m_lastThinnedPoseTime[recording::k_MAX_DEVICES] = {};
     double m_lastAppliedTime[recording::k_MAX_DEVICES] = {};
-    double m_lastLatencyTime = -1e9;
     bool m_hasFrame[recording::k_MAX_DEVICES] = {};
     recording::FrameRecord m_frames[recording::k_MAX_DEVICES] = {};
 

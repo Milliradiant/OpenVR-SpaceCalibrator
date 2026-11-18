@@ -20,3 +20,31 @@ if(NOT found OR CMAKE_MATCH_1 LESS 11.0 OR CMAKE_MATCH_1 GREATER 13.0)
     message(FATAL_ERROR "the time offset is ${CMAKE_MATCH_1} ms where the simulation has 12")
 endif()
 file(REMOVE ${WORK}/simulated.screc)
+
+# A tracking system re-bases its world mid-session (the device's world-from-driver steps 15 cm while its driver pose runs on), for
+# the target's system and for the reference's. The overlay's own code, replayed, has to come through it: a world calibration
+# recovered at once, a relative calibration's mount left where it was.
+foreach(step --frame-step --reference-frame-step)
+    execute_process(COMMAND ${BENCH} simulate ${WORK}/stepped.screc --duration 200 --seed 4 ${step} 100 RESULT_VARIABLE result)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "simulate ${step} failed")
+    endif()
+
+    execute_process(COMMAND ${BENCH} replay ${WORK}/stepped.screc --relative 0 RESULT_VARIABLE result OUTPUT_VARIABLE output)
+    string(REGEX MATCH "feet error under a world calibration +median [0-9.]+, 90% [0-9.]+, 99% ([0-9.]+)" found "${output}")
+    if(NOT result EQUAL 0 OR NOT found OR CMAKE_MATCH_1 GREATER 40.0)
+        message(FATAL_ERROR "${step}, world calibration: ${CMAKE_MATCH_1} mm at the feet (99%) where the recovery should keep it under 40\n${output}")
+    endif()
+
+    execute_process(COMMAND ${BENCH} replay ${WORK}/stepped.screc --relative 1 --driver RESULT_VARIABLE result OUTPUT_VARIABLE output)
+    string(REGEX MATCH "a relative calibration's mount, translation +median [0-9.]+, 90% [0-9.]+, 99% [0-9.]+, most ([0-9.]+) mm" found "${output}")
+    if(NOT result EQUAL 0 OR NOT found OR CMAKE_MATCH_1 GREATER 10.0)
+        message(FATAL_ERROR "${step}, relative calibration: the mount went ${CMAKE_MATCH_1} mm off, where a frame's step should not move it\n${output}")
+    endif()
+    # and what the driver applies of it is off for the moment of the step alone
+    string(REGEX MATCH "what the driver applies of it[^\n]*\n +feet error +median [0-9.]+, 90% [0-9.]+, 99% ([0-9.]+)" found "${output}")
+    if(NOT found OR CMAKE_MATCH_1 GREATER 40.0)
+        message(FATAL_ERROR "${step}, relative calibration: the driver applied ${CMAKE_MATCH_1} mm off at the feet (99%)\n${output}")
+    endif()
+endforeach()
+file(REMOVE ${WORK}/stepped.screc)

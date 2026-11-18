@@ -221,7 +221,6 @@ int main()
         recorder.start(directory / "off");
         recorder.onPose(0, poseAt(1.0));
         recorder.onApplied(3, Eigen::Quaterniond::Identity(), Eigen::Vector3d::Zero());
-        recorder.onLatency(0, 3, 0.01, 1.0);
         recorder.onFrame(transforms, 90.0);
         recorder.stop();
         CHECK(!fs::exists(directory / "off"));
@@ -272,7 +271,6 @@ int main()
     std::thread lighthouse([&] {
         while (secondsSince(start) < k_DURATION) {
             recorder.onPose(3, poseAt(0.001 * trackerPoses));
-            recorder.onLatency(0, 3, 0.0125, 0.75);
             recorder.onApplied(3, Eigen::Quaterniond(0.8, 0.0, 0.6, 0.0), Eigen::Vector3d(1.0, 2.0, 3.0));
             recorder.onPose(4, poseAt(0.001 * trackerPoses));
             recorder.onApplied(4, Eigen::Quaterniond(0.8, 0.0, 0.6, 0.0), Eigen::Vector3d(1.0, 2.0, 3.0));
@@ -369,7 +367,7 @@ int main()
     // what the driver applied: ten times a second for the target, once a second for the rest of its system
     CHECK(applied[3] >= 9 && applied[3] <= 13);
     CHECK(applied[4] >= 1 && applied[4] <= 3);
-    CHECK(latencies >= 5 && latencies <= 7);
+    CHECK(latencies == 0); // the driver uses none: the record is of recordings made before
     // who the devices are, once each
     CHECK(devices.size() == 4 && devices[0] == 1 && devices[3] == 1 && devices[4] == 1 && devices[5] == 1);
     for (const Record& record : records) {

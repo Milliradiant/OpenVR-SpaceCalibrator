@@ -17,6 +17,8 @@ struct SimulateOptions {
     double targetPositionNoise = 0.0003, targetRotationNoise = 0.0005;
     double driftMetres = 0.02, driftDegrees = 0.3; // how far the reference's space wanders against the target's
     double jumpTime = -1.0; // the reference's space steps at this time (a recentre), if positive
+    // a tracking system re-basing its world: the device's world-from-driver steps at this time while its driver pose runs on
+    double targetFrameStepTime = -1.0, referenceFrameStepTime = -1.0;
 };
 
 bool simulate(const std::filesystem::path& file, const SimulateOptions& options, std::string& error);
