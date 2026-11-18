@@ -2,6 +2,7 @@
 
 #include "ipc_server.h"
 #include "latency_estimator.h"
+#include "session_recorder.h"
 #include <Eigen/Geometry>
 #include <chrono>
 #include <openvr_driver.h>
@@ -73,6 +74,7 @@ private:
     DeviceCalibration_t m_cachedCalibrations[vr::k_unMaxTrackedDeviceCount] = {}; // cache of calibrations for relative calibration
     vr::DriverPose_t m_poses[vr::k_unMaxTrackedDeviceCount] = {}; // raw poses
     LatencyEstimator m_latencyEstimator;
+    SessionRecorder m_sessionRecorder;
     friend class ipc::Server;
 };
 }

@@ -33,6 +33,8 @@ vr::EVRInitError ServerTrackedDeviceProvider::Init(vr::IVRDriverContext* pDriver
     m_alignmentParams.align_speed_small = 0.2f;
     m_alignmentParams.align_speed_large = 2.0f;
 
+    m_sessionRecorder.start(util::getSpaceCalibratorConfigDir() / "recordings");
+
     m_ipcServer.Connect(this);
     hooking::InjectHooks(this, pDriverContext);
 
@@ -45,6 +47,7 @@ void ServerTrackedDeviceProvider::Cleanup()
 
     hooking::DisableHooks();
     m_ipcServer.Shutdown();
+    m_sessionRecorder.stop();
     VR_CLEANUP_SERVER_DRIVER_CONTEXT();
 }
 
@@ -56,7 +59,8 @@ void ServerTrackedDeviceProvider::RunFrame()
 {
     // we query hmd refresh rate for prediction
     vr::PropertyContainerHandle_t hHmdContainer = vr::VRProperties()->TrackedDeviceToPropertyContainer(vr::k_unTrackedDeviceIndex_Hmd);
-    m_fVsyncPredictionTime = 1.0 / vr::VRProperties()->GetFloatProperty(hHmdContainer, vr::Prop_DisplayFrequency_Float);
+    const double displayFrequency = vr::VRProperties()->GetFloatProperty(hHmdContainer, vr::Prop_DisplayFrequency_Float);
+    m_fVsyncPredictionTime = 1.0 / displayFrequency;
     m_latencyEstimator.set_hmd_refresh_rate(m_fVsyncPredictionTime);
 
     // device state may get desynced so we update it here
@@ -72,6 +76,8 @@ void ServerTrackedDeviceProvider::RunFrame()
             m_ipcServer.UpdatePose(i, corrected);
         }
     }
+
+    m_sessionRecorder.onFrame(m_transforms, m_latencyEstimator, displayFrequency);
 }
 bool ServerTrackedDeviceProvider::ShouldBlockStandbyMode()
 {
@@ -235,6 +241,9 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
     if (!IsDeviceIndexValid(unWhichDevice))
         return true;
 
+    // the pose as the tracking driver gave it, before anything below changes it
+    m_sessionRecorder.onPose(unWhichDevice, newPose);
+
     m_ipcServer.UpdatePose(unWhichDevice, newPose);
     m_latencyEstimator.push_pose(unWhichDevice, newPose);
 
@@ -313,6 +322,10 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
 
                     m_cachedCalibrations[unWhichDevice].pose = interpolatePoseAround(lerp, deviceWorldPos, m_cachedCalibrations[unWhichDevice].pose, targetCalib);
                 }
+            }
+
+            if (m_cachedCalibrations[unWhichDevice].hasCalibration) {
+                m_sessionRecorder.onApplied(unWhichDevice, m_cachedCalibrations[unWhichDevice].pose.rot, m_cachedCalibrations[unWhichDevice].pose.pos);
             }
 
             applyCalibrationToPose(
