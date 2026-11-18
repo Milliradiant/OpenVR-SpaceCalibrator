@@ -87,7 +87,8 @@ one session to the next, and `replay` runs it as part of the overlay's code: `--
 what a profile would keep of it from one replayed session to another.
 
 `mount` runs the estimator alone, fed each device's latest pose twenty times a second as the overlay has them (`--after
-RECORDING` puts it through that session first), and says how far its mount is from the hindsight one as the session goes. It
+RECORDING[,RECORDING...]` puts it through those sessions first, one after the other; `--carry N` lets it take at most N motions'
+worth of them into the session), and says how far its mount is from the hindsight one as the session goes. It
 also judges mounts without taking any mount's word for it: with the right mount the world calibration one pose pair gives does
 not care which way the head is turned, and with one that is off it swings as the head turns. So a mount is as good as that
 calibration is steady, at the feet, and the hindsight mount, the estimator's and the ones the overlay set live are each put to

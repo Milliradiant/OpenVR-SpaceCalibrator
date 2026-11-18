@@ -704,7 +704,13 @@ int commandMount(const Arguments& arguments)
     const bool aligned = arguments.get("--aligned") != nullptr;
     spacecal::MountEstimator estimator;
 
-    if (const char* earlier = arguments.get("--after")) {
+    // the sessions before, one after the other (--after A,B): each handed on through what a profile keeps of it
+    std::string earlierList = arguments.get("--after") ? arguments.get("--after") : "";
+    while (!earlierList.empty()) {
+        const size_t comma = earlierList.find(',');
+        const std::string earlier = earlierList.substr(0, comma);
+        earlierList = comma == std::string::npos ? "" : earlierList.substr(comma + 1);
+
         Session session;
         std::string error;
         if (!session.load(earlier, error)) {
@@ -713,13 +719,20 @@ int commandMount(const Arguments& arguments)
         }
         const Reference reference = solveReference(session, referenceOptions(arguments));
         if (!reference.ok) {
-            std::fprintf(stderr, "spacecal-bench: %s: %s\n", earlier, reference.error.c_str());
+            std::fprintf(stderr, "spacecal-bench: %s: %s\n", earlier.c_str(), reference.error.c_str());
             return 1;
         }
-        std::printf("the mount estimator over the session before, %s:\n", session.path.filename().string().c_str());
+        std::printf("the mount estimator over a session before, %s:\n", session.path.filename().string().c_str());
         runMountEstimator(session, reference, estimator, tickRate, span, aligned, true);
-        // through what a profile would keep of it
-        const std::vector<double> kept = estimator.state();
+        std::vector<double> kept = estimator.state();
+        // --carry N: a new session takes over at most this many motions' worth of what the sessions before added up
+        const double carry = arguments.number("--carry", 0.0);
+        if (earlierList.empty() && carry > 0.0 && kept.size() == spacecal::MountEstimator::k_STATE_SIZE && kept[1] > carry) {
+            const double keep = carry / kept[1];
+            for (size_t i = 1; i < 50; i++) {
+                kept[i] *= keep;
+            }
+        }
         estimator = spacecal::MountEstimator();
         if (!estimator.restore(kept)) {
             std::fprintf(stderr, "spacecal-bench: the estimator did not take its own state back\n");
