@@ -173,7 +173,8 @@ ConfigurationError ConfigurationManager::saveConfiguration() const
         return ConfigurationError::SerialiseFail;
     }
 
-    LOG_INFO("Configuration file saved to \"{0}\"", m_configPath);
+    // saved at every calibration accepted, which is every few seconds while a continuous calibration finds its mount
+    LOG_DEBUG("Configuration file saved to \"{0}\"", m_configPath);
 
     return ConfigurationError::Ok;
 }

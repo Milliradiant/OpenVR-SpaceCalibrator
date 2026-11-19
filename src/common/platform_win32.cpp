@@ -134,5 +134,44 @@ void setThreadName(const std::string& threadName)
     szWinThreadName.resize(std::mbstowcs(&szWinThreadName[0], threadName.c_str(), threadName.size()));
     SetThreadDescription(GetCurrentThread(), szWinThreadName.c_str());
 }
+
+bool mapFileReadOnly(const std::filesystem::path& path, MappedFile_t& file)
+{
+    file = {};
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(hFile, &size) || size.QuadPart <= 0) {
+        CloseHandle(hFile);
+        return false;
+    }
+    HANDLE hMapping = CreateFileMappingW(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    CloseHandle(hFile); // the mapping keeps the file open
+    if (hMapping == NULL) {
+        return false;
+    }
+    const void* pData = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+    if (pData == NULL) {
+        CloseHandle(hMapping);
+        return false;
+    }
+    file.pData = pData;
+    file.dwSize = (size_t)size.QuadPart;
+    file.hMapping = hMapping;
+    return true;
+}
+
+void unmapFile(MappedFile_t& file)
+{
+    if (file.pData) {
+        UnmapViewOfFile(file.pData);
+    }
+    if (file.hMapping) {
+        CloseHandle((HANDLE)file.hMapping);
+    }
+    file = {};
+}
 }
 #endif

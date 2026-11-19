@@ -90,6 +90,16 @@ void launchWebpage(const std::string& szUrl);
 
 void setThreadName(const std::string& threadName);
 
+// A file mapped read-only into memory: its pages are read from the disk as they are touched and belong to the file, which the
+// system can drop and read again, rather than to the process's own memory
+struct MappedFile_t {
+    const void* pData = nullptr;
+    size_t dwSize = 0;
+    void* hMapping = nullptr;
+};
+bool mapFileReadOnly(const std::filesystem::path& path, MappedFile_t& file);
+void unmapFile(MappedFile_t& file);
+
 // utf8 stuff for imgui -> overlay -> os interop
 
 }

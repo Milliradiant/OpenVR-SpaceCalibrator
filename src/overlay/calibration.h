@@ -56,7 +56,9 @@ constexpr double k_ROTATION_VARIANCE_DUPLICATE_DEGREES = 3.0; // the variance fo
 constexpr int k_ROTATION_VARIANCE_MAX_DUPLICATES = 5; // maximum amount of duplicates for rotational variance
 
 constexpr double k_METRIC_HISTORY_TIMESPAN = 60.0; // how much time in seconds we keep track of for the graphs
+constexpr double k_LIVE_METRICS_WANTED_SEC = 1.0; // the live metrics are worked out for this long after the graphs were last drawn
 constexpr double k_WARN_DEVICE_NOT_TRACKING_INTERVAL_SEC = 5.0; // time in seconds between "Device isnt tracking" log msgs
+constexpr double k_VIRTUAL_DESKTOP_REQUEST_INTERVAL_SEC = 1.0; // how often the driver is asked for Virtual Desktop's state
 
 enum class CalibrationState : uint8_t {
     // calibration is inactive
@@ -335,6 +337,9 @@ private:
     double m_lastNotTrackingTargetWarnTime = 0.0;
     double m_lastNotTrackingRefWarnTime = 0.0;
     double m_lastNoDevicesWarnTime = 0.0;
+    mutable double m_lastUntrackedRefLogTime = -INFINITY; // collectSample's "is not tracking", once in k_WARN_DEVICE_NOT_TRACKING_INTERVAL_SEC
+    mutable double m_lastUntrackedTargetLogTime = -INFINITY;
+    std::string m_lastAppliedDevicesLog; // what apply() last logged of the devices it applied to: logged again only when it changes
 
     // for auto device detection
     int m_candidateScore = 0;
@@ -380,6 +385,13 @@ public:
     size_t getCalibrationCount() const;
 
     const double getWantedUpdateInterval() const;
+    // how long until the soonest of the calibrations' ticks is due (zero or less: it is due now)
+    [[nodiscard]] double getTimeToNextTick(double currentTime) const;
+    // a calibration is finding its devices by how they move, which it does from one turn of the loop to the next
+    [[nodiscard]] bool isAutoDetecting() const;
+    // the graphs are on screen: the live metrics are worked out while they are, and for k_LIVE_METRICS_WANTED_SEC after
+    inline void wantLiveMetrics(double currentTime) { m_liveMetricsWantedTime = currentTime; }
+    [[nodiscard]] inline bool areLiveMetricsWanted(double currentTime) const { return currentTime - m_liveMetricsWantedTime <= k_LIVE_METRICS_WANTED_SEC; }
 
     [[nodiscard]] static inline CalibrationManager* getInstance() { return s_instance; }
     [[nodiscard]] inline ipc::IpcClient& getIpcClient() { return m_ipcClient; }
@@ -387,6 +399,8 @@ public:
 private:
     double m_wantedUpdateInterval = 1.0;
     double m_lastIpcConnectionAttemptTime = 0.0;
+    double m_lastVirtualDesktopRequestTime = -INFINITY;
+    double m_liveMetricsWantedTime = -INFINITY;
     bool m_needToApplyTransformsAfterInit = false;
 
 public:

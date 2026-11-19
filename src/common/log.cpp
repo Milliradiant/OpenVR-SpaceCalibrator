@@ -182,7 +182,12 @@ void Init(bool isOverlay)
     assert(s_logger == nullptr);
     assert(s_loggerOpenVr == nullptr);
 
-    quill::Backend::start();
+    // the backend's thread looks for lines to write this often. its default, half a microsecond, is a sleep the OS makes a
+    // millisecond at best: a thousand wakeups a second in each process (SteamVR's own, for the driver) for a log that writes a
+    // line a second or less
+    quill::BackendOptions backendOptions;
+    backendOptions.sleep_duration = std::chrono::milliseconds(20);
+    quill::Backend::start(backendOptions);
 
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);

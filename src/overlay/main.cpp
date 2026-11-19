@@ -29,10 +29,14 @@ extern "C" __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x
 
 // really bad cli parser
 // @FIXME: should probably make a cli parsing lib and use that here eventually, but api design is effort i cba to deal with for now
-void args_parse(int argc, char* argv[], spacecal::renderer::GraphicsBackend* renderer)
+void args_parse(int argc, char* argv[], spacecal::renderer::GraphicsBackend* renderer, bool* startMinimised)
 {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        // what SteamVR starts Space Calibrator with (its manifest's "arguments"): the dashboard is where it is used then
+        if ((arg == "--minimised" || arg == "--minimized") && startMinimised) {
+            *startMinimised = true;
+        }
         if (arg == "--renderer" && (i + 1 < argc) && renderer) {
             std::string selectedApi = argv[i + 1];
             if (selectedApi == "opengl" || selectedApi == "opengles" || selectedApi == "gl" || selectedApi == "gles") {
@@ -63,7 +67,8 @@ int entry_point(int argc, char* argv[])
     spacecal::renderer::GraphicsBackend eGraphicsApi = spacecal::renderer::GraphicsBackend::Vulkan;
 #endif
 
-    args_parse(argc, argv, &eGraphicsApi);
+    bool bStartMinimised = false;
+    args_parse(argc, argv, &eGraphicsApi, &bStartMinimised);
 
     // Space Calibrator has to be single instance to work well with Steam
     bool bIsRunningViaSteam = false;
@@ -109,7 +114,7 @@ int entry_point(int argc, char* argv[])
         return -1;
     }
 
-    if (!theWindow->CreateNativeWindow(eGraphicsApi)) {
+    if (!theWindow->CreateNativeWindow(eGraphicsApi, bStartMinimised)) {
         LOG_FATAL("Failed to create native window");
         return -1;
     }

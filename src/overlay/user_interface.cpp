@@ -948,6 +948,7 @@ void page_graphs(double currentTime)
 
     // @TODO: numbering or smth
     spacecal::TrackingSystemCalibration& calibration = spacecal::CalibrationManager::getInstance()->getCalibration(0);
+    spacecal::CalibrationManager::getInstance()->wantLiveMetrics(currentTime);
     draw_error_graphs(calibration.referenceDevice.trackingSystem, k_METRIC_HISTORY_TIMESPAN, currentTime, calibration.errorMetrics);
 }
 
@@ -1067,6 +1068,7 @@ void page_settings(double currentTime)
 void page_base_station_management(double currentTime)
 {
     ImGui::TextTitle("%s", LOCALE_GET("base_stations_title").c_str());
+    bluetooth::keep_scanning_for_base_stations(currentTime);
 
     if (!bluetooth::is_bluetooth_available()) {
         ImGui::TextDisabled(ICON_MS_BLUETOOTH_DISABLED "  ");

@@ -475,7 +475,10 @@ void VRState::updateVrState()
             break;
 
         default:
-            LOG_OPENVR_INFO("Unknown evt with id {}", vrEvent.eventType);
+            // once each: SteamVR sends some of them many times a second
+            if (m_loggedUnknownEvents.insert(vrEvent.eventType).second) {
+                LOG_OPENVR_INFO("Unknown evt with id {} (logged the first time only)", vrEvent.eventType);
+            }
             break;
         }
     }

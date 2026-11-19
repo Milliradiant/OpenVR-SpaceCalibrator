@@ -4,6 +4,7 @@
 #include "protocol.h"
 #include <openvr.h>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace spacecal {
@@ -70,6 +71,7 @@ private:
     vr::VROverlayHandle_t m_overlayThumbnailHandle = vr::k_ulOverlayHandleInvalid;
     ipc::protocol::SharedData_HmdMetadata m_hmdMetadata = {};
     ipc::protocol::SharedData_HmdMetadata m_lastHmdMetaState = {};
+    std::unordered_set<uint32_t> m_loggedUnknownEvents; // the event types updateVrState has logged as unknown
     VRDevice_t m_aDevices[vr::k_unMaxTrackedDeviceCount] = {};
     std::vector<std::string> m_aTrackingSystems;
 

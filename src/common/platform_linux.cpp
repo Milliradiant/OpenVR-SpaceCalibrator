@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -232,6 +233,36 @@ void setThreadName(const std::string& threadName)
     // https://man7.org/linux/man-pages/man3/pthread_setname_np.3.html
     std::string truncatedName = threadName.substr(0, 15);
     pthread_setname_np(pthread_self(), truncatedName.c_str());
+}
+
+bool mapFileReadOnly(const std::filesystem::path& path, MappedFile_t& file)
+{
+    file = {};
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == INVALID_FD) {
+        return false;
+    }
+    struct stat st = {};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+        close(fd);
+        return false;
+    }
+    void* pData = mmap(nullptr, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd); // the mapping keeps the file
+    if (pData == MAP_FAILED) {
+        return false;
+    }
+    file.pData = pData;
+    file.dwSize = (size_t)st.st_size;
+    return true;
+}
+
+void unmapFile(MappedFile_t& file)
+{
+    if (file.pData) {
+        munmap(const_cast<void*>(file.pData), file.dwSize);
+    }
+    file = {};
 }
 }
 #endif

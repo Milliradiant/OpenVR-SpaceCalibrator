@@ -110,6 +110,8 @@ namespace bluetooth {
         std::mutex mutexScanThread;
         std::condition_variable cvScanThread;
         std::atomic<bool> bScanThreadRunning = false;
+        bool bScanWanted = false; // under mutexScanThread
+        double lastScanRequestTime = -1e9; // the main thread's alone
     };
 
     BaseStationManagementState_t g_base_station_state;
@@ -891,6 +893,33 @@ namespace bluetooth {
     }
 #endif // OS_WINDOWS
 
+    // the scan's start and stop are this thread's: it has COM, which the BLE calls need
+    bool _set_scanning(bool bScan)
+    {
+        bool bSuccess = true;
+#if OS_WINDOWS
+        static bool s_bScanFrequencyApplied = false;
+        if (bScan && !s_bScanFrequencyApplied) {
+            s_bScanFrequencyApplied = true;
+            // Tell the windows API to increase the scan frequency because I like speed
+            BLUETOOTH_FIND_RADIO_PARAMS btFindRadioParam = { .dwSize = sizeof(BLUETOOTH_FIND_RADIO_PARAMS) };
+            HANDLE hBtRadio = INVALID_HANDLE_VALUE;
+            HBLUETOOTH_RADIO_FIND findResult = BluetoothFindFirstRadio(&btFindRadioParam, &hBtRadio);
+            if (findResult != NULL) {
+                BluetoothFindRadioClose(findResult);
+                // DeviceIoControl is blocking here so throw it in it's own thread to not block the main or bluetooth threads
+                std::thread(_apply_ble_scan_frequency, hBtRadio).detach();
+            }
+        }
+#endif
+        for (size_t i = 0; i < g_base_station_state.aAdapters.size(); i++) {
+            simpleble_adapter_t adapter = g_base_station_state.aAdapters[i];
+            bSuccess = bSuccess && ((bScan ? simpleble_adapter_scan_start(adapter) : simpleble_adapter_scan_stop(adapter)) == simpleble_err_t::SIMPLEBLE_SUCCESS);
+        }
+        LOG_BLUETOOTH_INFO("{} scanning for base stations", bScan ? "Started" : "Stopped");
+        return bSuccess;
+    }
+
     void _scan_init_thread_main()
     {
         platform::setThreadName("BluetoothScanInitThread");
@@ -912,42 +941,43 @@ namespace bluetooth {
             g_base_station_state.aAdapters[i] = simpleble_adapter_get_handle(i);
         }
 
-#if OS_WINDOWS
-        // Tell the windows API to increase the scan frequency because I like speed
-        BLUETOOTH_FIND_RADIO_PARAMS btFindRadioParam = { .dwSize = sizeof(BLUETOOTH_FIND_RADIO_PARAMS) };
-        HANDLE hBtRadio = INVALID_HANDLE_VALUE;
-        HBLUETOOTH_RADIO_FIND findResult = BluetoothFindFirstRadio(&btFindRadioParam, &hBtRadio);
-        if (findResult != NULL) {
-            BluetoothFindRadioClose(findResult);
-            // DeviceIoControl is blocking here so throw it in it's own thread to not block the main or bluetooth threads
-            std::thread(_apply_ble_scan_frequency, hBtRadio).detach();
-        }
-#endif
         ble_worker_start();
 
-        // Scan for stuff
         for (size_t i = 0; i < g_base_station_state.aAdapters.size(); i++) {
             simpleble_adapter_t adapter = g_base_station_state.aAdapters[i];
             bSuccess = bSuccess && (simpleble_adapter_set_callback_on_scan_start(adapter, _ble_callbackStart, (void*)&g_base_station_state) == simpleble_err_t::SIMPLEBLE_SUCCESS);
             bSuccess = bSuccess && (simpleble_adapter_set_callback_on_scan_stop(adapter, _ble_callbackStop, (void*)&g_base_station_state) == simpleble_err_t::SIMPLEBLE_SUCCESS);
             bSuccess = bSuccess && (simpleble_adapter_set_callback_on_scan_found(adapter, _ble_callbackDevUpdate, (void*)&g_base_station_state) == simpleble_err_t::SIMPLEBLE_SUCCESS);
             bSuccess = bSuccess && (simpleble_adapter_set_callback_on_scan_updated(adapter, _ble_callbackDevUpdate, (void*)&g_base_station_state) == simpleble_err_t::SIMPLEBLE_SUCCESS);
-
-            // Scan begin scanning
-            bSuccess = bSuccess && (simpleble_adapter_scan_start(adapter) == simpleble_err_t::SIMPLEBLE_SUCCESS);
         }
 
         if (!bSuccess) {
             LOG_BLUETOOTH_WARN("Failed to fully initialise base station BLE scanning");
         }
 
-        g_base_station_state.bScanThreadRunning = true;
-
+        // the scan runs while it is wanted (update_base_station_scanning) and stops when it is not: it kept the radio scanning
+        // flat out for as long as Space Calibrator ran, for a page or a setting that most sessions never touch
+        bool bScanning = false;
         {
             std::unique_lock<std::mutex> lock(g_base_station_state.mutexScanThread);
-            g_base_station_state.cvScanThread.wait(lock, [] {
-                return !g_base_station_state.bScanThreadRunning;
-            });
+            for (;;) {
+                g_base_station_state.cvScanThread.wait(lock, [&bScanning] {
+                    return !g_base_station_state.bScanThreadRunning || g_base_station_state.bScanWanted != bScanning;
+                });
+                if (!g_base_station_state.bScanThreadRunning) {
+                    break;
+                }
+                const bool bScan = g_base_station_state.bScanWanted;
+                lock.unlock();
+                if (!_set_scanning(bScan)) {
+                    LOG_BLUETOOTH_WARN("Failed to {} base station BLE scanning", bScan ? "start" : "stop");
+                }
+                lock.lock();
+                bScanning = bScan;
+            }
+        }
+        if (bScanning) {
+            _set_scanning(false);
         }
 
 #if OS_WINDOWS
@@ -959,19 +989,32 @@ namespace bluetooth {
 
     bool init_base_station_management()
     {
+        g_base_station_state.bScanThreadRunning = true;
         g_base_station_state.scannerThread = std::thread(_scan_init_thread_main);
         return true;
+    }
+
+    void keep_scanning_for_base_stations(double currentTime)
+    {
+        g_base_station_state.lastScanRequestTime = currentTime;
+    }
+
+    void update_base_station_scanning(double currentTime, bool bPowerManagementEnabled)
+    {
+        // power management turns the stations on as SteamVR starts and off as it quits, and needs them found by then
+        const bool bWanted = bPowerManagementEnabled || (currentTime - g_base_station_state.lastScanRequestTime <= k_SCAN_LINGER_SEC && currentTime >= g_base_station_state.lastScanRequestTime);
+        std::lock_guard<std::mutex> lock(g_base_station_state.mutexScanThread);
+        if (g_base_station_state.bScanWanted != bWanted) {
+            g_base_station_state.bScanWanted = bWanted;
+            g_base_station_state.cvScanThread.notify_all();
+        }
     }
 
     bool shutdown_base_station_management()
     {
         bool bSuccess = true;
 
-        for (size_t i = 0; i < g_base_station_state.aAdapters.size(); i++) {
-            simpleble_adapter_t adapter = g_base_station_state.aAdapters[i];
-            bSuccess = bSuccess && (simpleble_adapter_scan_stop(adapter) == simpleble_err_t::SIMPLEBLE_SUCCESS);
-        }
-
+        // the scan thread stops a scan it has running as it ends
         {
             std::lock_guard<std::mutex> lock(g_base_station_state.mutexScanThread);
             g_base_station_state.bScanThreadRunning = false;

@@ -10,6 +10,7 @@
 #include "util.h"
 #include "vr_core.h"
 #include <cmath>
+#include <fmt/format.h>
 #include <GLFW/glfw3.h>
 #include <math.h>
 
@@ -514,7 +515,9 @@ bool TrackingSystemCalibration::setRelativeCalibration(bool bRelative)
 Pose_t TrackingSystemCalibration::applyTransform(const Pose_t& originalPose, const Eigen::AffineCompact3d& transform) const
 {
     Pose_t pose(originalPose);
-    pose.rot = transform.rotation() * pose.rot;
+    // a calibration is a rotation and a translation, so its linear part is its rotation: rotation() would find it again by a
+    // decomposition of its own, per sample, which was most of what the live metrics cost
+    pose.rot = transform.linear() * pose.rot;
     pose.trans = transform * pose.trans;
     return pose;
 }
@@ -846,6 +849,9 @@ void TrackingSystemCalibration::updateMountEstimate(const double currentTime)
 
 void TrackingSystemCalibration::updateLiveMetrics(double currentTime)
 {
+    // they are for the graphs alone: nothing of the calibration reads them
+    if (!CalibrationManager::getInstance()->areLiveMetricsWanted(currentTime))
+        return;
     if (m_samples.size() < 2 || (currentTime - m_lastLiveMetricTime) < k_LIVE_METRIC_INTERVAL_SEC)
         return;
     m_lastLiveMetricTime = currentTime;
@@ -872,9 +878,10 @@ Sample_t TrackingSystemCalibration::collectSample(double currentTime, bool bLogU
         bool actuallyConnected = VRState::getInstance()->getVrDevice(referenceDevice.deviceId).bIsConnected;
         reference = CalibrationManager::getInstance()->m_poses[this->referenceDevice.deviceId];
         if (!(actuallyConnected && reference.poseIsValid && reference.result == vr::ETrackingResult::TrackingResult_Running_OK)) {
-            // dont spam logs
-            if (actuallyConnected && bLogUntracked) {
+            // dont spam logs: a device that has lost tracking is asked about at every tick
+            if (actuallyConnected && bLogUntracked && (currentTime - m_lastUntrackedRefLogTime >= k_WARN_DEVICE_NOT_TRACKING_INTERVAL_SEC || currentTime < m_lastUntrackedRefLogTime)) {
                 LOG_CALIB_WARN("Reference device is not tracking");
+                m_lastUntrackedRefLogTime = currentTime;
             }
             bIsTrackingOk = false;
         }
@@ -883,9 +890,10 @@ Sample_t TrackingSystemCalibration::collectSample(double currentTime, bool bLogU
         bool actuallyConnected = VRState::getInstance()->getVrDevice(targetDevice.deviceId).bIsConnected;
         target = CalibrationManager::getInstance()->m_poses[this->targetDevice.deviceId];
         if (!(actuallyConnected && target.poseIsValid && target.result == vr::ETrackingResult::TrackingResult_Running_OK)) {
-            // dont spam logs
-            if (actuallyConnected && bLogUntracked) {
+            // dont spam logs: a device that has lost tracking is asked about at every tick
+            if (actuallyConnected && bLogUntracked && (currentTime - m_lastUntrackedTargetLogTime >= k_WARN_DEVICE_NOT_TRACKING_INTERVAL_SEC || currentTime < m_lastUntrackedTargetLogTime)) {
                 LOG_CALIB_WARN("Target device is not tracking");
+                m_lastUntrackedTargetLogTime = currentTime;
             }
             bIsTrackingOk = false;
         }
@@ -1545,7 +1553,22 @@ void TrackingSystemCalibration::apply()
         return;
     }
 
-    LOG_CALIB_INFO("Applying calibration...");
+    // which devices it goes to, and how, is logged when that changes: with the mount settled a calibration is applied once a
+    // second or more often, to the same devices each time
+    std::string appliedDevices;
+    for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
+        const auto device = VRState::getInstance()->getVrDevice(i);
+        if (device.eDeviceClass != vr::TrackedDeviceClass_Invalid && device.szTrackingSystemId == targetDevice.trackingSystem) {
+            appliedDevices += fmt::format("{} {} {} {} {} {};", i, (int)device.eDeviceClass, device.bIsConnected, (int)device.eControllerRole, device.szSerial, device.dwDeviceIndex);
+        }
+    }
+    appliedDevices += fmt::format("{} {} {} {} {}", referenceDevice.deviceId, targetDevice.deviceId, isContinuousCalibration() && isRelativeCalibration, calibrateMotionVectors, isContinuousCalibration() && hideContinuousTracker);
+    const bool bLogDevices = appliedDevices != m_lastAppliedDevicesLog;
+    m_lastAppliedDevicesLog = appliedDevices;
+
+    if (bLogDevices) {
+        LOG_CALIB_INFO("Applying calibration...");
+    }
     for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
         auto device = VRState::getInstance()->getVrDevice(i);
         if (device.eDeviceClass != vr::TrackedDeviceClass_Invalid) {
@@ -1559,7 +1582,9 @@ void TrackingSystemCalibration::apply()
             args.unTargetOpenVrDeviceId = i;
             args.enabled(true);
 
-            LOG_CALIB_INFO("  applying device [{}]: class: {} connected: {} role: {} tracking: {} model: {} serial: {} idx: {}", i, device.eDeviceClass, device.bIsConnected, device.eControllerRole, device.szTrackingSystemId, device.szModel, device.szSerial, device.dwDeviceIndex);
+            if (bLogDevices) {
+                LOG_CALIB_INFO("  applying device [{}]: class: {} connected: {} role: {} tracking: {} model: {} serial: {} idx: {}", i, device.eDeviceClass, device.bIsConnected, device.eControllerRole, device.szTrackingSystemId, device.szModel, device.szSerial, device.dwDeviceIndex);
+            }
             args.quirks = ipc::protocol::DeviceQuirks_t::QUIRK_NONE;
 
             args.translation = eigenAsVrVec3d(calibratedTranslation);
@@ -1675,7 +1700,12 @@ void CalibrationManager::calibrationTick(const double currentTime)
         return;
     }
 
-    m_ipcClient.RequestVirtualDesktopProps();
+    // Virtual Desktop's state changes when its user changes a setting: once a second is soon enough, where every turn of the loop
+    // was an IPC call into the driver's thread and two of Virtual Desktop's own
+    if (currentTime - m_lastVirtualDesktopRequestTime >= k_VIRTUAL_DESKTOP_REQUEST_INTERVAL_SEC || currentTime < m_lastVirtualDesktopRequestTime) {
+        m_lastVirtualDesktopRequestTime = currentTime;
+        m_ipcClient.RequestVirtualDesktopProps();
+    }
     m_ipcClient.PollPoses();
 
     double wantedInterval = 0;
@@ -1724,6 +1754,25 @@ size_t CalibrationManager::getCalibrationCount() const
 const double CalibrationManager::getWantedUpdateInterval() const
 {
     return m_wantedUpdateInterval;
+}
+
+double CalibrationManager::getTimeToNextTick(double currentTime) const
+{
+    double soonest = INFINITY;
+    for (const auto& calibration : m_calibrations) {
+        soonest = std::min(soonest, calibration.m_lastTick + 1.0 / k_TICK_RATE_HZ - currentTime);
+    }
+    return std::isfinite(soonest) ? soonest : 0.0;
+}
+
+bool CalibrationManager::isAutoDetecting() const
+{
+    for (const auto& calibration : m_calibrations) {
+        if (calibration.state == CalibrationState::AUTO_DETECT_DEVICES_STANDARD || calibration.state == CalibrationState::AUTO_DETECT_DEVICES_CONTINUOUS) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool CalibrationManager::loadConfig()

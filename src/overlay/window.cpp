@@ -1,4 +1,6 @@
 #include "window.h"
+#include "base_station_management.h"
+#include "configuration.h"
 #include "log.h"
 #include "platform.h"
 #include "renderer/renderer.h"
@@ -7,6 +9,7 @@
 #include "util.h"
 #include "vr_core.h"
 
+#include <cstdio>
 #include <filesystem>
 #include <fmt/format.h>
 
@@ -40,7 +43,27 @@ void GLFWErrorCallback(int error, const char* description)
     LOG_ERROR("GLFW Error ({}): {}", error, description);
 }
 
-bool Window::CreateNativeWindow(renderer::GraphicsBackend gfxApi)
+ImFont* Window::addFont(const std::string& fileName, const ImFontConfig& cfg)
+{
+    const std::filesystem::path fontPath = util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / fileName;
+    auto mapped = m_fontFiles.find(fileName);
+    if (mapped == m_fontFiles.end()) {
+        platform::MappedFile_t file;
+        if (!platform::mapFileReadOnly(fontPath, file)) {
+            LOG_WARNING("Could not map font {}: reading it into memory instead", fontPath.string());
+            return ImGui::GetIO().Fonts->AddFontFromFileTTF(fontPath.string().c_str(), 24.0f, &cfg);
+        }
+        mapped = m_fontFiles.emplace(fileName, file).first;
+    }
+    ImFontConfig mappedCfg = cfg;
+    mappedCfg.FontDataOwnedByAtlas = false; // the mapping is ours, and outlives the atlas
+    if (mappedCfg.Name[0] == '\0') {
+        std::snprintf(mappedCfg.Name, sizeof(mappedCfg.Name), "%s", fileName.c_str());
+    }
+    return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<void*>(mapped->second.pData), (int)mapped->second.dwSize, 24.0f, &mappedCfg);
+}
+
+bool Window::CreateNativeWindow(renderer::GraphicsBackend gfxApi, bool startMinimised)
 {
     if (!glfwInit()) {
         const char* szGlfwError = nullptr;
@@ -63,6 +86,9 @@ bool Window::CreateNativeWindow(renderer::GraphicsBackend gfxApi)
     // multiple render backends require different hinting params
     m_graphicsContext->enableRendererGlfwHints();
     glfwWindowHint(GLFW_RESIZABLE, false);
+    // a window started minimised is made hidden, at its full size for the renderer to set up on, and shown minimised once it is
+    glfwWindowHint(GLFW_VISIBLE, !startMinimised);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, !startMinimised);
 
     m_glfwWindow = glfwCreateWindow(m_windowWidth, m_windowHeight, "Space Calibrator", nullptr, nullptr);
     if (!m_glfwWindow) {
@@ -91,9 +117,6 @@ bool Window::CreateNativeWindow(renderer::GraphicsBackend gfxApi)
     std::string szDebugTitle = fmt::format("Space Calibrator - {}", k_GRAPHICS_API_STRINGS[(uint32_t)gfxApi]);
     glfwSetWindowTitle(m_glfwWindow, szDebugTitle.c_str());
 #endif
-
-    // Minimise the window
-    glfwWindowHint(GLFW_VISIBLE, false);
 
 #if OS_WINDOWS
     HWND windowHwnd = glfwGetWin32Window(m_glfwWindow);
@@ -132,96 +155,106 @@ bool Window::CreateNativeWindow(renderer::GraphicsBackend gfxApi)
     };
 
     // default font
-    std::string fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "Poppins-Regular.ttf").string();
+    std::string fontPath = "Poppins-Regular.ttf";
     cfg.GlyphExcludeRanges = NULL;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = false;
     cfg.PixelSnapH = false;
-    ImGui::fonts::pDefault = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    ImGui::fonts::pDefault = addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "MPLUS1p-Regular.ttf").string();
+    fontPath = "MPLUS1p-Regular.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "NotoSansSC-Regular.ttf").string();
+    fontPath = "NotoSansSC-Regular.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "NotoSansTC-Regular.ttf").string();
+    fontPath = "NotoSansTC-Regular.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "NotoSansKR-Regular.ttf").string();
+    fontPath = "NotoSansKR-Regular.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "MaterialSymbolsSharp_FILL.ttf").string();
+    fontPath = "MaterialSymbolsSharp_FILL.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 4.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = true;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
     // bold font
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "Poppins-Bold.ttf").string();
+    fontPath = "Poppins-Bold.ttf";
     cfg.GlyphExcludeRanges = NULL;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = false;
     cfg.PixelSnapH = false;
-    ImGui::fonts::pHeading = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    ImGui::fonts::pHeading = addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "MPLUS1p-Bold.ttf").string();
+    fontPath = "MPLUS1p-Bold.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "NotoSansSC-Bold.ttf").string();
+    fontPath = "NotoSansSC-Bold.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "NotoSansTC-Bold.ttf").string();
+    fontPath = "NotoSansTC-Bold.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "NotoSansKR-Bold.ttf").string();
+    fontPath = "NotoSansKR-Bold.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 0.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = false;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
-    fontPath = (util::getSpaceCalibratorInstallDir() / "assets" / "fonts" / "MaterialSymbolsSharp_FILL.ttf").string();
+    fontPath = "MaterialSymbolsSharp_FILL.ttf";
     cfg.GlyphExcludeRanges = k_RANGE_CORE_LATIN;
     cfg.GlyphOffset.y = 4.0f;
     cfg.MergeMode = true;
     cfg.PixelSnapH = true;
-    io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 24.0f, &cfg);
+    addFont(fontPath, cfg);
 
     ImGui_ImplGlfw_InitForOther(m_glfwWindow, true);
     m_graphicsContext->initialiseWindow(m_glfwWindow, m_windowWidth, m_windowHeight);
 
     ImGui::StyleColorsDark();
     SetupImGuiStyle();
+
+    if (startMinimised) {
+        // shown minimised and without taking the focus from whatever has it (the game, when SteamVR starts Space Calibrator)
+#if OS_WINDOWS
+        ShowWindow(windowHwnd, SW_SHOWMINNOACTIVE);
+#else
+        glfwShowWindow(m_glfwWindow);
+        glfwIconifyWindow(m_glfwWindow);
+#endif
+    }
 
     return true;
 }
@@ -329,6 +362,12 @@ void Window::Shutdown()
     ImPlot3D::DestroyContext();
     ImGui::DestroyContext();
 
+    // the atlas, which read the fonts out of them, is gone
+    for (auto& [name, file] : m_fontFiles) {
+        platform::unmapFile(file);
+    }
+    m_fontFiles.clear();
+
     if (m_glfwWindow)
         glfwDestroyWindow(m_glfwWindow);
 
@@ -341,6 +380,7 @@ void Window::RunLoop()
     CalibrationManager::getInstance()->init();
 
     double lastFrameStartTime = glfwGetTime();
+    double lastDrawTime = -INFINITY;
     bool bKeyboardOpen = false;
     bool bKeyboardJustClosed = false;
     char textBuf[0x400] = {};
@@ -349,11 +389,14 @@ void Window::RunLoop()
         double time = glfwGetTime();
         VRState::getInstance()->updateVrState();
         CalibrationManager::getInstance()->calibrationTick(time);
+        bluetooth::update_base_station_scanning(time, ConfigurationManager::getInstance()->getConfiguration()->base_stations.auto_power_management_enabled);
 
         bool dashboardVisible = false;
         int width = 0, height = 0;
         glfwGetFramebufferSize(m_glfwWindow, &width, &height);
-        const bool windowVisible = (width > 0 && height > 0);
+        const bool windowVisible = (width > 0 && height > 0) && glfwGetWindowAttrib(m_glfwWindow, GLFW_VISIBLE) && !glfwGetWindowAttrib(m_glfwWindow, GLFW_ICONIFIED);
+        // the desktop window is being used: it is under the mouse or has the keyboard's focus
+        const bool windowInUse = windowVisible && (glfwGetWindowAttrib(m_glfwWindow, GLFW_FOCUSED) || glfwGetWindowAttrib(m_glfwWindow, GLFW_HOVERED));
 
         if (VRState::getInstance()->getOverlayHandle()) {
             vr::VROverlayHandle_t hOverlayHandle = VRState::getInstance()->getOverlayHandle();
@@ -478,7 +521,11 @@ void Window::RunLoop()
             }
         }
 
-        if (windowVisible || dashboardVisible) {
+        // the dashboard and a desktop window in use are drawn at every turn of the loop, a desktop window on the screen that nobody
+        // is using as often as what it shows changes, and nothing when neither can be seen
+        const bool drawWindow = windowInUse || (windowVisible && time - lastDrawTime >= k_IDLE_WINDOW_FRAME_INTERVAL_SEC);
+        if (dashboardVisible || drawWindow) {
+            lastDrawTime = time;
             auto& io = ImGui::GetIO();
 
             // These change state now, so we must execute these before doing our own modifications to the io state for VR
@@ -517,8 +564,15 @@ void Window::RunLoop()
         constexpr double dashboardInterval = 1.0 / 90.0; // fps
         double waitEventsTimeout = std::max(CalibrationManager::getInstance()->getWantedUpdateInterval(), dashboardInterval);
 
-        if (dashboardVisible && waitEventsTimeout > dashboardInterval)
+        if (dashboardVisible && waitEventsTimeout > dashboardInterval) {
             waitEventsTimeout = dashboardInterval;
+        } else if (!dashboardVisible && !windowInUse && !CalibrationManager::getInstance()->isAutoDetecting()) {
+            // nothing anyone is using is drawn: the loop need not come round before the calibration's next tick is due (it ticks
+            // twenty times a second however often the loop runs). the auto-detection works from one turn of the loop to the
+            // next, and keeps the loop as it was
+            const double timeToNextTick = CalibrationManager::getInstance()->getTimeToNextTick(glfwGetTime());
+            waitEventsTimeout = std::max(waitEventsTimeout, timeToNextTick + k_TICK_WAKE_MARGIN_SEC);
+        }
 
         glfwWaitEventsTimeout(waitEventsTimeout);
 

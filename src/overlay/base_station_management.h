@@ -47,9 +47,16 @@ namespace bluetooth {
         bool isFirmwareCooked = false; // if true the base station is not gonna be usable
     };
 
+    // how long the scan goes on after the base stations' page was last drawn
+    constexpr double k_SCAN_LINGER_SEC = 15.0;
+
     bool is_bluetooth_available();
     bool init_base_station_management();
     bool shutdown_base_station_management();
+    // the base stations' page is on screen: their list is kept up while it is, and for k_SCAN_LINGER_SEC after
+    void keep_scanning_for_base_stations(double currentTime);
+    // once a turn of the loop: starts or stops the scan for what wants it
+    void update_base_station_scanning(double currentTime, bool bPowerManagementEnabled);
     size_t get_base_station_count();
     BaseStation_t get_base_station(size_t index);
     bool set_base_station_channel(size_t index, uint8_t channel);
