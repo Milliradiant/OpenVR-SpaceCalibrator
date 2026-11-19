@@ -91,27 +91,63 @@ void Server::Callback_RequestVirtualDesktopProps(::IpcCommandType_t cmdType, ::I
 
 void Server::UpdatePose(vr::TrackedDeviceIndex_t unWhichDevice, const vr::DriverPose_t& pose)
 {
-    if (unWhichDevice < 0 || unWhichDevice >= vr::k_unMaxTrackedDeviceCount) {
+    if (unWhichDevice >= vr::k_unMaxTrackedDeviceCount) {
         LOG_IPC_FATAL("Attempted to update shared pose buffer, but got invalid device index {}...", unWhichDevice);
         return;
     }
-    m_driver->m_poses[unWhichDevice] = pose;
-    if (!ipc_server_write_shared_memory(m_hIpc, m_poseDataOperation, m_driver->m_poses, sizeof(m_driver->m_poses))) {
-        LOG_IPC_ERROR("Tried updating shared pose buffer, but operation is invalid!");
+    // only this device's pose is written: no other pose is touched and no lock is taken that anything else could hold
+    protocol::storeSlotShared(m_state.load(std::memory_order_acquire)->poses[unWhichDevice], pose);
+    m_posedDevices.fetch_or(uint64_t(1) << unWhichDevice, std::memory_order_relaxed);
+}
+
+bool Server::GetPose(vr::TrackedDeviceIndex_t unWhichDevice, vr::DriverPose_t& pose) const
+{
+    if (unWhichDevice >= vr::k_unMaxTrackedDeviceCount || !(m_posedDevices.load(std::memory_order_relaxed) & (uint64_t(1) << unWhichDevice))) {
+        return false;
     }
-    if (unWhichDevice == vr::k_unTrackedDeviceIndex_Hmd) {
-        if (!ipc_server_write_shared_memory(m_hIpc, m_hmdMetaOperation, &m_driver->m_hmdMetaData, sizeof(m_driver->m_hmdMetaData))) {
-            LOG_IPC_ERROR("Tried updating HMD metadata, but operation is invalid!");
-        }
+    return protocol::loadSlot(m_state.load(std::memory_order_acquire)->poses[unWhichDevice], pose);
+}
+
+protocol::Command_SetDeviceTransform_t Server::GetTransform(vr::TrackedDeviceIndex_t unWhichDevice) const
+{
+    // the last transform this thread had for each device: should a read ever not come through (writes kept starting on the
+    // copy being read, where the overlay writes a device's transform a few times a second at most), the device goes on with it
+    thread_local protocol::Command_SetDeviceTransform_t t_lastTransforms[vr::k_unMaxTrackedDeviceCount] = {};
+    if (unWhichDevice >= vr::k_unMaxTrackedDeviceCount) {
+        return {};
     }
-    ipc_client_read_shared_memory(m_hIpc, m_deviceTransformOperation, &m_driver->m_transforms, sizeof(m_driver->m_transforms));
+    protocol::Command_SetDeviceTransform_t& last = t_lastTransforms[unWhichDevice];
+    protocol::loadSlot(m_state.load(std::memory_order_acquire)->transforms[unWhichDevice], last);
+    return last;
+}
+
+bool Server::GetTransformIfChanged(vr::TrackedDeviceIndex_t unWhichDevice, uint32_t& sequence, protocol::Command_SetDeviceTransform_t& transform) const
+{
+    if (unWhichDevice >= vr::k_unMaxTrackedDeviceCount) {
+        return false;
+    }
+    const protocol::SharedSlot_t<protocol::Command_SetDeviceTransform_t>& slot = m_state.load(std::memory_order_acquire)->transforms[unWhichDevice];
+    const uint32_t current = protocol::shared::loadSequence(slot.sequence, std::memory_order_relaxed);
+    if (current == sequence || !protocol::loadSlot(slot, transform)) {
+        return false;
+    }
+    sequence = current;
+    return true;
+}
+
+void Server::UpdateHmdMetadata(const protocol::SharedData_HmdMetadata& metadata)
+{
+    protocol::storeSlot(m_state.load(std::memory_order_acquire)->hmdMetadata, metadata);
 }
 
 bool Server::Connect(spacecal::ServerTrackedDeviceProvider* driver)
 {
+    m_driver = driver;
+    m_state.store(&m_localState, std::memory_order_release);
+
     m_hIpc = ::ipc_server_init({
         .szSharedMemoryName = protocol::k_szIpcIdentifier,
-        .dwSharedBufferSizeBytes = protocol::k_unSharedMemoryElementSize,
+        .dwSharedBufferSizeBytes = sizeof(protocol::SharedState_t),
         .aFunctions = m_funcs,
         .dwFunctionCount = IPC_COUNT_OF(m_funcs),
         .aOperations = nullptr,
@@ -121,40 +157,27 @@ bool Server::Connect(spacecal::ServerTrackedDeviceProvider* driver)
 
     if (m_hIpc == k_hInvalidIpcHandle) {
         LOG_IPC_ERROR("Failed to initialise IPC server!");
+        return false;
     }
 
-    m_poseDataOperation = {
-        .szIdentifier = "SpaceCalibratorNova_PoseSharedBuffer",
-        .dwSharedMemoryOffset = 0,
-    };
-    m_deviceTransformOperation = {
-        .szIdentifier = "SpaceCalibratorNova_DeviceTransformsSharedBuffer",
-        .dwSharedMemoryOffset = protocol::k_unSharedMemoryPoseSize,
-    };
-    m_hmdMetaOperation = {
-        .szIdentifier = "SpaceCalibratorNova_HmdMetaData",
-        .dwSharedMemoryOffset = protocol::k_unSharedMemoryPoseSize + protocol::k_unSharedMemoryDeviceTransformSize,
-    };
-
-    if (!ipc_server_register_operation(m_hIpc, &m_poseDataOperation)) {
-        LOG_IPC_ERROR("Failed to register pose data shared memory operation!");
+    size_t bufferSize = 0;
+    void* buffer = ::ipc_get_streaming_buffer(m_hIpc, &bufferSize);
+    if (!buffer || bufferSize < sizeof(protocol::SharedState_t)) {
+        LOG_IPC_ERROR("The IPC's shared memory is too small for the shared state ({} bytes, {} needed)", bufferSize, sizeof(protocol::SharedState_t));
+        return false;
     }
 
-    if (!ipc_server_register_operation(m_hIpc, &m_deviceTransformOperation)) {
-        LOG_IPC_ERROR("Failed to register device transform shared memory operation!");
-    }
-
-    if (!ipc_server_register_operation(m_hIpc, &m_hmdMetaOperation)) {
-        LOG_IPC_ERROR("Failed to register hmd metadata shared memory operation!");
-    }
-
-    m_driver = driver;
-
-    return m_hIpc != k_hInvalidIpcHandle;
+    // the IPC has zeroed it: every slot empty, every transform disabled. the magic goes in last, for the overlay to see it whole
+    protocol::SharedState_t* state = static_cast<protocol::SharedState_t*>(buffer);
+    std::atomic_ref<uint64_t>(state->magic).store(protocol::k_SHARED_STATE_MAGIC, std::memory_order_release);
+    m_state.store(state, std::memory_order_release);
+    return true;
 }
 
 void Server::Shutdown()
 {
+    // what is shared goes back to this process's own memory before the shared memory goes
+    m_state.store(&m_localState, std::memory_order_release);
     ::ipc_server_shutdown(&m_hIpc);
 }
 }

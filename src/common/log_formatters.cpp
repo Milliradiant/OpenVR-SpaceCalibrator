@@ -21,6 +21,8 @@ std::string format_as(Version_t version)
         return "IPC_PROTOCOL_VER_4";
     case ipc::protocol::IPC_PROTOCOL_VER_5:
         return "IPC_PROTOCOL_VER_5";
+    case ipc::protocol::IPC_PROTOCOL_VER_6:
+        return "IPC_PROTOCOL_VER_6";
     default:
         return fmt::format("IPC_PROTOCOL_VER_UNK_{}", (uint32_t)version);
     }

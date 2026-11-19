@@ -55,8 +55,9 @@ void ServerTrackedDeviceProvider::RunFrame()
     vr::VRServerDriverHost()->GetRawTrackedDevicePoses((float)m_fVsyncPredictionTime, rawPoses, vr::k_unMaxTrackedDeviceCount);
 
     for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
-        if (IsPoseValid(m_poses[i]) && !IsPoseValid(rawPoses[i])) {
-            vr::DriverPose_t corrected = m_poses[i];
+        vr::DriverPose_t latest;
+        if (!IsPoseValid(rawPoses[i]) && m_ipcServer.GetPose(i, latest) && IsPoseValid(latest)) {
+            vr::DriverPose_t corrected = latest;
             corrected.deviceIsConnected = rawPoses[i].bDeviceIsConnected;
             corrected.poseIsValid = rawPoses[i].bPoseIsValid;
             corrected.result = rawPoses[i].eTrackingResult;
@@ -64,7 +65,10 @@ void ServerTrackedDeviceProvider::RunFrame()
         }
     }
 
-    m_sessionRecorder.onFrame(m_transforms, displayFrequency);
+    for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
+        m_ipcServer.GetTransformIfChanged(i, m_frameTransformSequences[i], m_frameTransforms[i]);
+    }
+    m_sessionRecorder.onFrame(m_frameTransforms, displayFrequency);
 }
 bool ServerTrackedDeviceProvider::ShouldBlockStandbyMode()
 {
@@ -128,7 +132,7 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
 
     vr::DriverPose_t& modifiedPose = newPose;
 
-    auto& transform = m_transforms[unWhichDevice];
+    const ipc::protocol::Command_SetDeviceTransform_t transform = m_ipcServer.GetTransform(unWhichDevice);
 
     // the cached calibration belongs to the relative session it was blended in. drop it once that session ends, so the next one
     // starts from its own first calibration instead of blending its way out of a stale one
@@ -146,7 +150,11 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
         if (transform.relativeCoordSystem()) {
             Pose_t calibration;
             const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            const RelativeCalibration::Update update = m_relativeCalibration.update(unWhichDevice, transform, m_poses, nowSeconds, calibration);
+            // the two devices' latest poses as their drivers gave them (this one's is the pose above, before HandleQuirks)
+            vr::DriverPose_t referencePose, targetPose;
+            const bool hasReference = IsDeviceIndexValid(transform.unRelativeReferenceOpenvrDeviceId) && m_ipcServer.GetPose(transform.unRelativeReferenceOpenvrDeviceId, referencePose);
+            const bool hasTarget = IsDeviceIndexValid(transform.unRelativeTargetOpenvrDeviceId) && m_ipcServer.GetPose(transform.unRelativeTargetOpenvrDeviceId, targetPose);
+            const RelativeCalibration::Update update = m_relativeCalibration.update(unWhichDevice, transform, hasReference ? &referencePose : nullptr, hasTarget ? &targetPose : nullptr, nowSeconds, calibration);
             if (update.hasCalibration) {
                 m_sessionRecorder.onApplied(unWhichDevice, calibration.rot, calibration.pos);
             }
@@ -233,6 +241,7 @@ void ServerTrackedDeviceProvider::RequestVirtualDesktopProps()
         m_hmdMetaData.VD_hmdModel = hmd::VD_getHmdModel();
         m_hmdMetaData.VD_stageTrackingEnabled = hmd::VD_isStageTrackingEnabled();
     }
+    m_ipcServer.UpdateHmdMetadata(m_hmdMetaData);
 }
 
 void ServerTrackedDeviceProvider::SetAlignmentSpeedParams(ipc::protocol::Command_SetAlignmentSpeedParams_t& params)

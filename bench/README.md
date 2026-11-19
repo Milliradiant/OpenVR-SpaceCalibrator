@@ -106,10 +106,13 @@ calibration's mount left where it was.
 
 ## Tests
 
-`ctest` runs five: the mount estimator on made-up motions of two devices fixed to each other (`tests/test_mount_estimator.cpp`:
+`ctest` runs seven: the mount estimator on made-up motions of two devices fixed to each other (`tests/test_mount_estimator.cpp`:
 it finds the mount, leaves out motions that do not fit, comes back the same from what a profile keeps, and starts over when the
 target is moved on the reference); the recording's writer and reader against each other (`tests/test_recording.cpp`); the driver's recorder
 as the driver builds it against a stand-in for SteamVR's settings and device properties, called from several threads at once
 (`tests/test_session_recorder.cpp`); the driver's relative calibration on made-up poses, which has to be the calibration the
-poses were made with and to follow it when it moves (`tests/test_relative_calibration.cpp`); and the bench on simulated sessions:
-the reference against the known answer, the overlay's and the driver's code through a step of each tracking system's frame.
+poses were made with and to follow it when it moves (`tests/test_relative_calibration.cpp`); the slots the driver and the overlay
+share their poses, transforms and the headset's metadata through (`tests/test_shared_state.cpp`, built once with each side's
+DriverPose_t): written and read from several threads and from two processes at once, every copy read has to be one a writer wrote
+whole, and a writer that stops halfway has to leave the slot readable; and the bench on simulated sessions: the reference against
+the known answer, the overlay's and the driver's code through a step of each tracking system's frame.

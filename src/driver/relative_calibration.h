@@ -47,7 +47,10 @@ public:
     // the device's transform is not a relative one (any more): what was blended for it belongs to the session that ended
     void drop(vr::TrackedDeviceIndex_t deviceIndex);
 
-    // `poses` is the latest pose of each device as its driver gave it. `calibration` is what to apply to the device's pose now
+    // `reference` and `target` are the two devices' latest poses as their drivers gave them, nullptr where a device has none.
+    // `calibration` is what to apply to the device's pose now
+    Update update(vr::TrackedDeviceIndex_t deviceIndex, const ipc::protocol::Command_SetDeviceTransform_t& transform, const vr::DriverPose_t* reference, const vr::DriverPose_t* target, double nowSeconds, Pose_t& calibration);
+    // the same, with `poses` the latest pose of every device
     Update update(vr::TrackedDeviceIndex_t deviceIndex, const ipc::protocol::Command_SetDeviceTransform_t& transform, const vr::DriverPose_t* poses, double nowSeconds, Pose_t& calibration);
 
 private:

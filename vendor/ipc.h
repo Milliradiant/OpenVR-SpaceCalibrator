@@ -88,6 +88,10 @@ bool ipc_server_register_operation(IpcHandle_t hIpcServer, IpcOperation_t* ipcOp
 bool ipc_server_write_shared_memory(IpcHandle_t hIpcServer, IpcOperation_t ipcOperation, void* pSrc, size_t destSize);
 /* Reads the given memory from the shared memory at the provided offset. Think of this as a memcpy with extra steps. */
 bool ipc_client_read_shared_memory(IpcHandle_t hIpcClient, IpcOperation_t ipcOperation, void* pDest, size_t destSize);
+/* The streaming buffer itself, for data the caller shares by its own means (no operation's mutex or event). nullptr for an invalid
+   handle. pSize gets the buffer's size as this process has it mapped: on a client, what the server created, which can be smaller
+   than the client expects if the two are of different versions. */
+void* ipc_get_streaming_buffer(IpcHandle_t hIpc, size_t* pSize);
 
 #ifdef IPC_IMPLEMENTATION
 
@@ -154,6 +158,7 @@ struct __internal__IpcHandle_t {
     const char* szSharedMemoryName = nullptr;
     IpcNativeHandle_t hSharedMemory = NULL; // on windows, HANDLE to filemapping
     void* pSharedMemory = nullptr; // on windows, void* to the actual memory
+    size_t dwSharedMemorySize = 0; // the size of the mapping, function invocation area included
     IpcNativeHandle_t hNativeMutex = 0; // on windows, HANDLE to mutex
     IpcNativeHandle_t hNativeEvent = 0; // on windows, HANDLE to mutex
     std::thread poll_thread;
@@ -313,6 +318,7 @@ IpcHandle_t ipc_server_init(IpcCreateArguments_t args) {
 
     // init shared memory to zeros
     memset(handleInternal->pSharedMemory, 0, totalSharedMemSize);
+    handleInternal->dwSharedMemorySize = totalSharedMemSize;
 
     handleInternal->is_running = true;
     handleInternal->poll_thread = std::thread(__internal_ipc_server_poll_requests, (IpcHandle_t)handleInternal);
@@ -346,6 +352,10 @@ IpcHandle_t ipc_client_init(IpcCreateArguments_t args) {
         free(handleInternal);
         return k_hInvalidIpcHandle;
     }
+    MEMORY_BASIC_INFORMATION viewInfo = {};
+    if (VirtualQuery(handleInternal->pSharedMemory, &viewInfo, sizeof(viewInfo)) == sizeof(viewInfo)) {
+        handleInternal->dwSharedMemorySize = viewInfo.RegionSize;
+    }
 
     std::string mutexName = std::string(args.szSharedMemoryName) + "_FUNC_MTX";
     std::string eventName = std::string(args.szSharedMemoryName) + "_FUNC_EVT";
@@ -369,6 +379,12 @@ IpcHandle_t ipc_client_init(IpcCreateArguments_t args) {
     struct stat st = {};
     fstat(hSharedMemFd, &st);
     handleInternal->pSharedMemory = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, hSharedMemFd, 0);
+    if (handleInternal->pSharedMemory == MAP_FAILED) {
+        close(hSharedMemFd);
+        free(handleInternal);
+        return k_hInvalidIpcHandle;
+    }
+    handleInternal->dwSharedMemorySize = (size_t)st.st_size;
 
     std::string mutexName = szSharedMemoryPath + "_FUNC_MTX";
     std::string eventName = szSharedMemoryPath + "_FUNC_EVT";
@@ -685,6 +701,23 @@ bool ipc_client_read_shared_memory(IpcHandle_t hIpcClient, IpcOperation_t ipcOpe
 #endif
 
     return true;
+}
+
+void* ipc_get_streaming_buffer(IpcHandle_t hIpc, size_t* pSize) {
+    if (pSize) {
+        *pSize = 0;
+    }
+    if (hIpc == k_hInvalidIpcHandle) {
+        return nullptr;
+    }
+    __internal__IpcHandle_t* handleInternal = (__internal__IpcHandle_t*)hIpc;
+    if (!handleInternal->pSharedMemory || handleInternal->dwSharedMemorySize < IPC_FUNCTION_ARGS_TOTAL_SIZE) {
+        return nullptr;
+    }
+    if (pSize) {
+        *pSize = handleInternal->dwSharedMemorySize - IPC_FUNCTION_ARGS_TOTAL_SIZE;
+    }
+    return (char*)handleInternal->pSharedMemory + IPC_FUNCTION_ARGS_TOTAL_SIZE;
 }
 
 #if IPC_OS_LINUX

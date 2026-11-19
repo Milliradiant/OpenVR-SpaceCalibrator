@@ -78,6 +78,17 @@ add_executable(test_mount_estimator tests/test_mount_estimator.cpp)
 target_link_libraries(test_mount_estimator PRIVATE overlay_calibration)
 add_test(NAME mount_estimator COMMAND test_mount_estimator)
 
+# the slots the driver and the overlay share their state through, from many threads and two processes; built once with the
+# overlay's copy of OpenVR's DriverPose_t and once with the driver's own, which have to be laid out the same
+foreach(side IN ITEMS OVERLAY DRIVER)
+    string(TOLOWER ${side} side_name)
+    add_executable(test_shared_state_${side_name} tests/test_shared_state.cpp)
+    target_include_directories(test_shared_state_${side_name} PRIVATE ${APP}/src/common ${APP}/vendor/openvr/headers)
+    target_compile_definitions(test_shared_state_${side_name} PRIVATE IS_${side})
+    target_link_libraries(test_shared_state_${side_name} PRIVATE Threads::Threads)
+    add_test(NAME shared_state_${side_name} COMMAND test_shared_state_${side_name})
+endforeach()
+
 # the driver's relative calibration on made-up poses
 add_executable(test_relative_calibration tests/test_relative_calibration.cpp)
 target_link_libraries(test_relative_calibration PRIVATE driver_relative)

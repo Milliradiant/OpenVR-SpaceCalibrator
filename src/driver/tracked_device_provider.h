@@ -48,8 +48,9 @@ private:
     double m_fVsyncPredictionTime = 0.0;
     ipc::protocol::SharedData_HmdMetadata m_hmdMetaData = {};
 
-    ipc::protocol::Command_SetDeviceTransform_t m_transforms[vr::k_unMaxTrackedDeviceCount] = {};
-    vr::DriverPose_t m_poses[vr::k_unMaxTrackedDeviceCount] = {}; // raw poses
+    // RunFrame's own copy of the transforms the overlay set, for the recorder, and the sequence each was read at
+    ipc::protocol::Command_SetDeviceTransform_t m_frameTransforms[vr::k_unMaxTrackedDeviceCount] = {};
+    uint32_t m_frameTransformSequences[vr::k_unMaxTrackedDeviceCount] = {};
     RelativeCalibration m_relativeCalibration;
     SessionRecorder m_sessionRecorder;
     friend class ipc::Server;

@@ -109,8 +109,9 @@ enum Version_t {
     IPC_PROTOCOL_VER_3,
     IPC_PROTOCOL_VER_4,
     IPC_PROTOCOL_VER_5,
+    IPC_PROTOCOL_VER_6, // the poses, the transforms and the headset's metadata shared without locks (shared_state.h)
 
-    IPC_PROTOCOL_CURRENT = IPC_PROTOCOL_VER_5,
+    IPC_PROTOCOL_CURRENT = IPC_PROTOCOL_VER_6,
 };
 
 enum CommandType_t : uint8_t {
@@ -219,8 +220,5 @@ struct SharedData_HmdMetadata {
     VD_HmdModel VD_hmdModel = VD_HmdModel_None;
 };
 
-constexpr uint32_t k_unSharedMemoryPoseSize = vr::k_unMaxTrackedDeviceCount * sizeof(vr::DriverPose_t);
-constexpr uint32_t k_unSharedMemoryDeviceTransformSize = vr::k_unMaxTrackedDeviceCount * sizeof(protocol::Command_SetDeviceTransform_t);
-constexpr uint32_t k_unSharedMemoryElementSize = k_unSharedMemoryPoseSize + k_unSharedMemoryDeviceTransformSize + sizeof(SharedData_HmdMetadata);
 constexpr const char* k_szIpcIdentifier = "SPACE_CALIBRATOR_NOVA";
 }

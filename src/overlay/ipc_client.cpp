@@ -28,7 +28,7 @@ bool IpcClient::Connect()
 {
     m_hIpc = ipc_client_init({
         .szSharedMemoryName = protocol::k_szIpcIdentifier,
-        .dwSharedBufferSizeBytes = protocol::k_unSharedMemoryElementSize,
+        .dwSharedBufferSizeBytes = sizeof(protocol::SharedState_t),
         .aFunctions = m_funcs,
         .dwFunctionCount = IPC_COUNT_OF(m_funcs),
         .aOperations = nullptr,
@@ -42,36 +42,25 @@ bool IpcClient::Connect()
         return false;
     }
 
-    m_poseDataOperation = {
-        .szIdentifier = "SpaceCalibratorNova_PoseSharedBuffer",
-        .dwSharedMemoryOffset = 0,
-    };
-    m_deviceTransformOperation = {
-        .szIdentifier = "SpaceCalibratorNova_DeviceTransformsSharedBuffer",
-        .dwSharedMemoryOffset = protocol::k_unSharedMemoryPoseSize,
-    };
-    m_hmdMetaOperation = {
-        .szIdentifier = "SpaceCalibratorNova_HmdMetaData",
-        .dwSharedMemoryOffset = protocol::k_unSharedMemoryPoseSize + protocol::k_unSharedMemoryDeviceTransformSize,
-    };
-
-    if (!ipc_server_register_operation(m_hIpc, &m_poseDataOperation)) {
-        LOG_IPC_ERROR("Failed to register pose data shared memory operation!");
-    }
-
-    if (!ipc_server_register_operation(m_hIpc, &m_deviceTransformOperation)) {
-        LOG_IPC_ERROR("Failed to register device transform shared memory operation!");
-    }
-
-    if (!ipc_server_register_operation(m_hIpc, &m_hmdMetaOperation)) {
-        LOG_IPC_ERROR("Failed to register hmd metadata shared memory operation!");
-    }
-
-    // send handshake to driver
+    // send handshake to driver (it logs a protocol other than its own)
     protocol::Command_Handshake_t handshakeArgs;
     ipc_client_dispatch_function(m_hIpc, protocol::IPC_COMMAND_HANDSHAKE, &handshakeArgs, sizeof(handshakeArgs));
 
-    m_connected = m_hIpc != k_hInvalidIpcHandle;
+    // the poses, the transforms and the headset's metadata are shared through the driver's own memory layout: one of another
+    // protocol cannot be read, and is not written to
+    size_t bufferSize = 0;
+    void* buffer = ipc_get_streaming_buffer(m_hIpc, &bufferSize);
+    if (!protocol::hasSharedState(buffer, bufferSize)) {
+        if (!m_reportedIncompatibleDriver) {
+            m_reportedIncompatibleDriver = true;
+            LOG_IPC_ERROR("The driver's shared memory is not of IPC protocol {} ({} bytes): a driver of another version, or one still starting", (uint32_t)protocol::IPC_PROTOCOL_CURRENT, bufferSize);
+        }
+        ipc_client_shutdown(&m_hIpc);
+        m_connected = false;
+        return false;
+    }
+    m_state = static_cast<protocol::SharedState_t*>(buffer);
+    m_connected = true;
 
     LOG_IPC_INFO("IPC connection established: {}", m_connected);
 
@@ -80,15 +69,18 @@ bool IpcClient::Connect()
 
 void IpcClient::Shutdown()
 {
+    m_state = nullptr;
+    m_connected = false;
     ipc_client_shutdown(&m_hIpc);
 }
 
 void IpcClient::SetDeviceTransform(protocol::Command_SetDeviceTransform_t deviceTransform)
 {
-    m_transforms[deviceTransform.unTargetOpenVrDeviceId] = deviceTransform;
-    if (!ipc_server_write_shared_memory(m_hIpc, m_deviceTransformOperation, m_transforms, sizeof(m_transforms))) {
-        LOG_IPC_ERROR("Tried updating device transform buffer, but operation is invalid!");
+    if (!m_state || deviceTransform.unTargetOpenVrDeviceId >= vr::k_unMaxTrackedDeviceCount) {
+        LOG_IPC_ERROR("Tried updating the transform of device {}, but the driver's shared memory is not there", deviceTransform.unTargetOpenVrDeviceId);
+        return;
     }
+    protocol::storeSlot(m_state->transforms[deviceTransform.unTargetOpenVrDeviceId], deviceTransform);
 }
 void IpcClient::SetAlignmentSpeed(protocol::Command_SetAlignmentSpeedParams_t alignmentParams)
 {
@@ -104,9 +96,16 @@ void IpcClient::RequestVirtualDesktopProps()
         ipc_client_dispatch_function(m_hIpc, protocol::IPC_COMMAND_REQUEST_VIRTUAL_DESKTOP_PROPS, nullptr, 0);
     }
 }
+// each device's latest pose and the headset's metadata. a slot that could not be read keeps what it had
 void IpcClient::PollPoses()
 {
-    ipc_client_read_shared_memory(m_hIpc, m_poseDataOperation, spacecal::CalibrationManager::getInstance()->m_poses, sizeof(spacecal::CalibrationManager::getInstance()->m_poses));
-    ipc_client_read_shared_memory(m_hIpc, m_hmdMetaOperation, &spacecal::VRState::getInstance()->m_hmdMetadata, sizeof(spacecal::VRState::getInstance()->m_hmdMetadata));
+    if (!m_state) {
+        return;
+    }
+    vr::DriverPose_t* poses = spacecal::CalibrationManager::getInstance()->m_poses;
+    for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
+        protocol::loadSlot(m_state->poses[i], poses[i]);
+    }
+    protocol::loadSlot(m_state->hmdMetadata, spacecal::VRState::getInstance()->m_hmdMetadata);
 }
 }

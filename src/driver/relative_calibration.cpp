@@ -133,21 +133,28 @@ void RelativeCalibration::drop(vr::TrackedDeviceIndex_t deviceIndex)
 
 RelativeCalibration::Update RelativeCalibration::update(vr::TrackedDeviceIndex_t deviceIndex, const ipc::protocol::Command_SetDeviceTransform_t& transform, const vr::DriverPose_t* poses, double nowSeconds, Pose_t& calibration)
 {
+    const vr::DriverPose_t* reference = isDeviceIndexValid(transform.unRelativeReferenceOpenvrDeviceId) ? &poses[transform.unRelativeReferenceOpenvrDeviceId] : nullptr;
+    const vr::DriverPose_t* target = isDeviceIndexValid(transform.unRelativeTargetOpenvrDeviceId) ? &poses[transform.unRelativeTargetOpenvrDeviceId] : nullptr;
+    return update(deviceIndex, transform, reference, target, nowSeconds, calibration);
+}
+
+RelativeCalibration::Update RelativeCalibration::update(vr::TrackedDeviceIndex_t deviceIndex, const ipc::protocol::Command_SetDeviceTransform_t& transform, const vr::DriverPose_t* reference, const vr::DriverPose_t* target, double nowSeconds, Pose_t& calibration)
+{
     Update result;
     if (deviceIndex >= vr::k_unMaxTrackedDeviceCount) {
         return result;
     }
     DeviceCalibration_t& cached = m_cachedCalibrations[deviceIndex];
 
-    if (isDeviceIndexValid(transform.unRelativeReferenceOpenvrDeviceId) && isPoseValid(poses[transform.unRelativeReferenceOpenvrDeviceId]) && isDeviceIndexValid(transform.unRelativeTargetOpenvrDeviceId) && isPoseValid(poses[transform.unRelativeTargetOpenvrDeviceId])) {
+    if (reference && isPoseValid(*reference) && target && isPoseValid(*target)) {
         // The two devices' latest poses, as their drivers gave them (H' and T'). Neither is predicted and no latency between them
         // is made up for. Both were, and over recorded sessions both made the result worse: the prediction turned a pose by its
         // turning rate about the driver's axes, where drivers give the rate in the device's own, and the latency estimate was
         // either never there (above some 300 poses a second it never had enough of both devices' samples) or, made to work, noisier
         // than the few milliseconds it stood for. A world calibration holds whatever the poses' time, so nothing is lost by taking
         // the pair as it is; what the pair is off by, the blend below averages out.
-        const Eigen::Affine3d refWorldNow = getWorldFromDriverPose(poses[transform.unRelativeReferenceOpenvrDeviceId]);
-        const Eigen::Affine3d targetWorldNow = getWorldFromDriverPose(poses[transform.unRelativeTargetOpenvrDeviceId]);
+        const Eigen::Affine3d refWorldNow = getWorldFromDriverPose(*reference);
+        const Eigen::Affine3d targetWorldNow = getWorldFromDriverPose(*target);
 
         // local-space calibration transform (C_L)
         const Eigen::Affine3d calibrationLocal = eigenTransFromHmdVec(transform.translation.v) * eigenFromHmdQuat(transform.rotation);

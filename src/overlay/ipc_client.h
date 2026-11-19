@@ -2,6 +2,7 @@
 
 // clang-format off
 #include "protocol.h"
+#include "shared_state.h"
 #include "ipc.h"
 // clang-format on
 
@@ -21,12 +22,9 @@ public:
 
 private:
     bool m_connected = false;
+    bool m_reportedIncompatibleDriver = false;
     ::IpcHandle_t m_hIpc = k_hInvalidIpcHandle;
-    ::IpcOperation_t m_poseDataOperation;
-    ::IpcOperation_t m_deviceTransformOperation;
-    ::IpcOperation_t m_hmdMetaOperation;
-
-    ipc::protocol::Command_SetDeviceTransform_t m_transforms[vr::k_unMaxTrackedDeviceCount] = {};
+    protocol::SharedState_t* m_state = nullptr; // the driver's shared memory, once it is there and of this protocol
 
     static const IpcFunction_t m_funcs[];
 
