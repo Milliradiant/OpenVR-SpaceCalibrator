@@ -10,6 +10,7 @@ struct CalibrationEvent {
     double time = 0.0;
     bool enabled = false;
     bool relative = false; // the calibration is the target's pose in the reference's frame (the mount), not a world calibration
+    bool lerp = true; // a continuous calibration's: the driver goes to it without a step
     Pose calibration;
     std::string note;
 };

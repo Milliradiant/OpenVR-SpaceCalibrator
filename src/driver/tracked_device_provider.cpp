@@ -130,47 +130,59 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
 
     m_ipcServer.UpdatePose(unWhichDevice, newPose);
 
-    vr::DriverPose_t& modifiedPose = newPose;
-
     const ipc::protocol::Command_SetDeviceTransform_t transform = m_ipcServer.GetTransform(unWhichDevice);
+    if (!transform.enabled()) {
+        // a calibration this device is the target of has ended: the next one begins from its own first calibration
+        m_appliedCalibrations[unWhichDevice].reset();
+        return true;
+    }
 
-    // the cached calibration belongs to the relative session it was blended in. drop it once that session ends, so the next one
-    // starts from its own first calibration instead of blending its way out of a stale one
-    if (!transform.enabled() || !transform.relativeCoordSystem()) {
-        m_relativeCalibration.drop(unWhichDevice);
+    // A continuous calibration goes through what the driver applies to every device it is for, kept by the calibration's own
+    // target device (the overlay sends each of them the same transform): under relative calibration that target's poses, paired
+    // with the reference's, are what the calibration is worked out from, and otherwise the overlay's world calibration is gone
+    // to without a step. A calibration that is not continuous is applied as it is.
+    const vr::TrackedDeviceIndex_t calibrationTarget = transform.unRelativeTargetOpenvrDeviceId;
+    const bool bContinuous = transform.relativeCoordSystem() || transform.lerpCalibrations();
+    AppliedCalibration* applied = bContinuous && IsDeviceIndexValid(calibrationTarget) ? &m_appliedCalibrations[calibrationTarget] : nullptr;
+    if (!bContinuous && unWhichDevice == calibrationTarget) {
+        // a calibration done once is applied as it is, and a continuous one after it begins from its own first calibration
+        m_appliedCalibrations[unWhichDevice].reset();
+    }
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (applied) {
+        const Pose_t transformPose = { .rot = eigenFromHmdQuat(transform.rotation).normalized(), .pos = eigenVecFromHmdVec(transform.translation.v) };
+        vr::DriverPose_t referencePose;
+        const bool bOwnTarget = unWhichDevice == calibrationTarget;
+        const bool bHasReference = bOwnTarget && IsDeviceIndexValid(transform.unRelativeReferenceOpenvrDeviceId) && m_ipcServer.GetPose(transform.unRelativeReferenceOpenvrDeviceId, referencePose);
+        if (transform.relativeCoordSystem()) {
+            // the transform is the mount: the target's pose in the reference's frame
+            if (bHasReference) {
+                applied->addPair(nowSeconds, referencePose, newPose, transformPose);
+            }
+        } else {
+            applied->setWorld(nowSeconds, transformPose, true);
+            if (bOwnTarget) {
+                applied->watchFrames(newPose, bHasReference ? &referencePose : nullptr);
+            }
+        }
     }
 
     if (transform.hideContinuousTracker()) {
         newPose.vecPosition[0] = -newPose.vecWorldFromDriverTranslation[0];
         newPose.vecPosition[1] = -newPose.vecWorldFromDriverTranslation[1] + 9001; // put it 9001m above the origin
         newPose.vecPosition[2] = -newPose.vecWorldFromDriverTranslation[2];
-    } else if (transform.enabled()) {
-        HandleQuirks(transform.quirks, modifiedPose);
-
-        if (transform.relativeCoordSystem()) {
-            Pose_t calibration;
-            const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            // the two devices' latest poses as their drivers gave them (this one's is the pose above, before HandleQuirks)
-            vr::DriverPose_t referencePose, targetPose;
-            const bool hasReference = IsDeviceIndexValid(transform.unRelativeReferenceOpenvrDeviceId) && m_ipcServer.GetPose(transform.unRelativeReferenceOpenvrDeviceId, referencePose);
-            const bool hasTarget = IsDeviceIndexValid(transform.unRelativeTargetOpenvrDeviceId) && m_ipcServer.GetPose(transform.unRelativeTargetOpenvrDeviceId, targetPose);
-            const RelativeCalibration::Update update = m_relativeCalibration.update(unWhichDevice, transform, hasReference ? &referencePose : nullptr, hasTarget ? &targetPose : nullptr, nowSeconds, calibration);
-            if (update.hasCalibration) {
-                m_sessionRecorder.onApplied(unWhichDevice, calibration.rot, calibration.pos);
-            }
-
-            applyCalibrationToPose(
-                modifiedPose,
-                hmdQuatFromEigen(calibration.rot),
-                hmdVecFromEigenVec(calibration.pos),
-                transform.scale,
-                transform.calibrateMotionVecs());
-        } else {
-            // classic world-space application
-            applyCalibrationToPose(modifiedPose, transform.rotation, transform.translation, transform.scale, transform.calibrateMotionVecs());
-        }
+        return true;
     }
 
+    HandleQuirks(transform.quirks, newPose);
+    Pose_t calibration;
+    if (applied && applied->current(nowSeconds, calibration)) {
+        m_sessionRecorder.onApplied(unWhichDevice, calibration.rot, calibration.pos);
+        applyCalibrationToPose(newPose, hmdQuatFromEigen(calibration.rot), hmdVecFromEigenVec(calibration.pos), transform.scale, transform.calibrateMotionVecs());
+    } else if (!transform.relativeCoordSystem()) {
+        // classic world-space application
+        applyCalibrationToPose(newPose, transform.rotation, transform.translation, transform.scale, transform.calibrateMotionVecs());
+    }
     return true;
 }
 
@@ -246,6 +258,8 @@ void ServerTrackedDeviceProvider::RequestVirtualDesktopProps()
 
 void ServerTrackedDeviceProvider::SetAlignmentSpeedParams(ipc::protocol::Command_SetAlignmentSpeedParams_t& params)
 {
-    m_relativeCalibration.setAlignmentParams(params);
+    // the blend these were the speeds of is gone: AppliedCalibration follows the calibration by what the poses say (the overlay
+    // never sent them)
+    (void)params;
 }
 }

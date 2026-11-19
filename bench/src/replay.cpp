@@ -155,6 +155,7 @@ void IpcClient::SetDeviceTransform(protocol::Command_SetDeviceTransform_t transf
     event.time = g_replay.time;
     event.enabled = transform.enabled();
     event.relative = transform.relativeCoordSystem();
+    event.lerp = transform.lerpCalibrations();
     event.calibration = Pose {
         Eigen::Quaterniond(transform.rotation.w, transform.rotation.x, transform.rotation.y, transform.rotation.z).normalized(),
         Eigen::Vector3d(transform.translation.v[0], transform.translation.v[1], transform.translation.v[2]),
@@ -166,7 +167,7 @@ void IpcClient::SetDeviceTransform(protocol::Command_SetDeviceTransform_t transf
     std::vector<CalibrationEvent>& events = g_replay.result->events;
     if (!events.empty()) {
         const CalibrationEvent& last = events.back();
-        if (last.enabled == event.enabled && last.relative == event.relative && last.calibration.p == event.calibration.p && last.calibration.q.coeffs() == event.calibration.q.coeffs()) {
+        if (last.enabled == event.enabled && last.relative == event.relative && last.lerp == event.lerp && last.calibration.p == event.calibration.p && last.calibration.q.coeffs() == event.calibration.q.coeffs()) {
             return;
         }
     }

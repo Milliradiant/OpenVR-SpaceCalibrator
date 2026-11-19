@@ -25,7 +25,7 @@ A recording holds, each with the time it happened:
 - every pose of the headset and of the calibration's two devices as their own driver gave it, before Space Calibrator changes
   anything (position, rotation, velocities, the pose's stated age, validity), and every other device's five times a second;
 - each device's world-from-driver and driver-from-head frames, when they change;
-- every calibration the overlay hands the driver, and the calibration the driver actually applies as it blends toward it;
+- every calibration the overlay hands the driver, and the calibration the driver actually applies as it follows it;
 - each device's serial, model and tracking system. (Recordings of drivers before the latency estimate was taken out also have
   the latency the driver used.)
 
@@ -40,7 +40,7 @@ spacecal-bench reference RECORDING   the session's calibration solved in hindsig
 spacecal-bench score RECORDING       what was applied during the session, judged against that
 spacecal-bench check RECORDING       each driver's velocities and pose ages against its own poses
 spacecal-bench replay RECORDING      the overlay's calibration code run over the recording, judged the same way
-spacecal-bench driver RECORDING      the driver's relative calibration code run over the recording, judged the same way
+spacecal-bench driver RECORDING      what the driver applies, its code run over the recording, judged the same way
 spacecal-bench mount RECORDING       the mount estimator fed from the recording as the overlay feeds it
 spacecal-bench simulate RECORDING    write a made-up session with a known answer
 ```
@@ -72,12 +72,20 @@ memory, the configuration and the log (`stubs/`, `src/replay.cpp`), and runs it 
 the same samples at the same times lead to the same calibrations, accepted and rejected for the same reasons. A change to the
 calibration code is judged by building the bench with it and replaying the same recordings before and after.
 
-`driver` does the same for the driver's side of a relative calibration (`src/driver/relative_calibration.cpp`, built into the
-bench as it is): every pose of the two devices goes through it in the order and at the times they came in, with the calibrations
-the overlay set live, or with `--reference-mount` the hindsight mount throughout, which shows the driver's part alone. It also
-compares the calibration the recorded driver began each stretch of relative calibration with against this code's at the same
-pose: for a recording made by the same driver code the two are the same. `replay --driver` runs the driver's code on what the
-replayed overlay sets: the two together are what would have reached SteamVR.
+`driver` does the same for what the driver applies of a continuous calibration (`src/driver/applied_calibration.cpp`, built into
+the bench as it is): every pose of the two devices goes through it in the order and at the times they came in, with the
+calibrations the overlay set live (mounts under relative calibration, world calibrations otherwise), or with `--reference-mount`
+the hindsight mount throughout, which shows the driver's part alone. It also compares the calibration the recorded driver began
+each stretch of relative calibration with against this code's at the same pose: a stretch begins from its first pose pair either
+way. `replay --driver` runs the driver's code on what the replayed overlay sets: the two together are what would have reached
+SteamVR. `--follow`, `--turn-scale`, `--catch-up` and the rest of `driverSettings` in `src/main.cpp` try other settings.
+
+Both say how still what was applied held, which is what a user sees of a calibration's corrections: how fast it moved the feet
+from one reading to the next (at every pose of the reference, and ten times a second to set beside a recorded driver's), the same
+while the head turned faster than 60 degrees a second (a calibration that moves with the head is the jitter that follows it), how
+far it strayed from its own five second mean, and how far off the reference it was. From 30 s after the first reading, where the
+reference device sent its poses at 50 a second or more (a headset taken off sends a few) and away from a step of the reference.
+`--trace FILE` writes what was applied at every pose of the reference, its error and what the code was doing.
 
 ### The mount
 
@@ -110,8 +118,10 @@ calibration's mount left where it was.
 it finds the mount, leaves out motions that do not fit, comes back the same from what a profile keeps, and starts over when the
 target is moved on the reference); the recording's writer and reader against each other (`tests/test_recording.cpp`); the driver's recorder
 as the driver builds it against a stand-in for SteamVR's settings and device properties, called from several threads at once
-(`tests/test_session_recorder.cpp`); the driver's relative calibration on made-up poses, which has to be the calibration the
-poses were made with and to follow it when it moves (`tests/test_relative_calibration.cpp`); the slots the driver and the overlay
+(`tests/test_session_recorder.cpp`); what the driver applies on made-up poses (`tests/test_applied_calibration.cpp`): the
+calibration the poses were made with, followed without a step when the spaces drift apart and caught up with when one recentres,
+held while the headset's tracking has stopped and it still says its pose is valid, a step of a world taken back at once, and a
+world calibration gone to without a step; the slots the driver and the overlay
 share their poses, transforms and the headset's metadata through (`tests/test_shared_state.cpp`, built once with each side's
 DriverPose_t): written and read from several threads and from two processes at once, every copy read has to be one a writer wrote
 whole, and a writer that stops halfway has to leave the slot readable; and the bench on simulated sessions: the reference against

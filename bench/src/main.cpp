@@ -5,6 +5,7 @@
 //   spacecal-bench score RECORDING                what was applied during the session, against that reference
 //   spacecal-bench replay RECORDING [options]     the overlay's own calibration code run over the recording, scored the same way
 //   spacecal-bench check RECORDING                what each driver's poses say of themselves: rates, ages, velocities
+//   spacecal-bench driver RECORDING [options]     what the driver applies, its own code run over the recording: how close, how still
 //   spacecal-bench simulate RECORDING [options]   a made-up session with a known answer
 //
 // README.md has what each prints and how to read it.
@@ -13,6 +14,8 @@
 #include "replay.h"
 #include <fstream>
 #include "replay_driver.h"
+#include "applied_calibration.h"
+#include <algorithm>
 #include "mount_estimator.h"
 #include "session.h"
 #include "simulate.h"
@@ -299,6 +302,7 @@ std::vector<CalibrationEvent> recordedEvents(const Device& target)
         event.time = transform.time;
         event.enabled = transform.record.flags & TransformFlag_Enabled;
         event.relative = transform.record.flags & TransformFlag_RelativeCoordSystem;
+        event.lerp = transform.record.flags & TransformFlag_LerpCalibrations;
         event.calibration = Pose {
             Eigen::Quaterniond(transform.record.rotation[0], transform.record.rotation[1], transform.record.rotation[2], transform.record.rotation[3]).normalized(),
             Eigen::Vector3d(transform.record.translation[0], transform.record.translation[1], transform.record.translation[2]),
@@ -363,6 +367,114 @@ void scoreApplied(const Session& session, const Reference& reference, const std:
     }
 }
 
+// How still what the driver applied held, and how close it was: how fast it moved the feet (1.5 m below the target and half a
+// metre to each side, the worst of the five) from one reading to the next, how far it strayed from its own five second mean there,
+// and how far off the reference it put them. Counted from 30 s after the first reading on, where the reference device sent its
+// poses at 50 a second or more (a headset taken off sends a few a second, and its tracking is no measure of anything) and away
+// from a step of the reference. A step of the target's world-from-driver is not counted either: the calibration takes it back,
+// and the devices do not move.
+void scoreStillness(const char* label, const Session& session, const Reference& reference, const std::vector<AppliedSample>& samples)
+{
+    const std::vector<double>& frames = session.target()->frameChanges;
+    std::vector<double> referenceTimes;
+    for (const Sample& sample : session.reference()->samples) {
+        if (sample.valid) {
+            referenceTimes.push_back(sample.time);
+        }
+    }
+    // the reference device sent at least ten valid poses in the last fifth of a second, and the reference's world calibration
+    // did not step within five seconds (around a step it is an average across it)
+    const auto live = [&](double time) {
+        const auto after = std::upper_bound(referenceTimes.begin(), referenceTimes.end(), time);
+        const auto from = std::lower_bound(referenceTimes.begin(), referenceTimes.end(), time - 0.2);
+        if (after - from < 10) {
+            return false;
+        }
+        for (const double jump : reference.jumps) {
+            if (std::abs(time - jump) < 5.0) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // how fast the reference device turned at a time, degrees a second, from its poses around it
+    const Device& head = *session.reference();
+    const auto turning = [&](double time) {
+        Pose a, b;
+        if (!head.worldAt(time - 0.02, a) || !head.worldAt(time + 0.02, b)) {
+            return 0.0;
+        }
+        return angleBetween(a.q, b.q) / 0.04 * k_DEG;
+    };
+    std::vector<double> speeds, times, errors, turningSpeeds;
+    std::vector<Eigen::Vector3d> path;
+    Eigen::Vector3d at = Eigen::Vector3d::Zero();
+    double longest = 0.0, counted = 0.0;
+    for (size_t i = 1; i < samples.size(); i++) {
+        const AppliedSample& before = samples[i - 1];
+        const AppliedSample& now = samples[i];
+        const double seconds = now.time - before.time;
+        if (seconds <= 0.0 || seconds > 0.25 || now.time < samples.front().time + 30.0 || !live(now.time) || !live(before.time)) {
+            continue;
+        }
+        const auto step = std::lower_bound(frames.begin(), frames.end(), before.time);
+        if (step != frames.end() && *step <= now.time) {
+            continue;
+        }
+        counted += seconds;
+        const Eigen::Vector3d feet = before.target - Eigen::Vector3d(0.0, reference.options.feetBelowTarget, 0.0);
+        speeds.push_back(reference.feetDistance(now.calibration, before.calibration, feet) / seconds);
+        if (turning(now.time) > 60.0) {
+            turningSpeeds.push_back(speeds.back());
+        }
+        at += now.calibration * feet - before.calibration * feet;
+        path.push_back(at);
+        times.push_back(now.time);
+        longest = std::max(longest, reference.feetDistance(now.calibration, before.calibration, feet));
+        const double error = reference.feetError(now.time, now.calibration);
+        if (error >= 0.0) {
+            errors.push_back(error);
+        }
+    }
+    if (speeds.empty()) {
+        std::printf("  %s: nothing applied\n", label);
+        return;
+    }
+    // the path against its own mean over the five seconds around each reading
+    std::vector<double> strays;
+    size_t begin = 0, end = 0;
+    Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+    for (size_t i = 0; i < path.size(); i++) {
+        while (end < path.size() && times[end] <= times[i] + 2.5) {
+            sum += path[end++];
+        }
+        while (times[begin] < times[i] - 2.5) {
+            sum -= path[begin++];
+        }
+        strays.push_back((path[i] - sum / static_cast<double>(end - begin)).norm());
+    }
+    std::printf("  %s (%.0f s counted):\n", label, counted);
+    printDistribution("    how fast it moved the feet", speeds, 1e3, "mm/s");
+    printDistribution("    the same, the head turning over 60 deg/s", turningSpeeds, 1e3, "mm/s");
+    printDistribution("    off its own 5 s mean at the feet", strays, 1e3, "mm");
+    printDistribution("    off the reference at the feet", errors, 1e3, "mm");
+    std::printf("    its largest step from one reading to the next: %.2f mm\n", longest * 1e3);
+}
+
+// the driver's applied calibration as a recording has it, with the target's position then
+std::vector<AppliedSample> samplesOf(const Session& session, const std::vector<AppliedEvent>& applied)
+{
+    std::vector<AppliedSample> samples;
+    const Device& target = *session.target();
+    for (const AppliedEvent& event : applied) {
+        Pose pose;
+        if (target.worldAt(event.time, pose, 0.25)) {
+            samples.push_back({ event.time, event.calibration, pose.p, {} });
+        }
+    }
+    return samples;
+}
+
 void printLatency(const std::vector<LatencyEvent>& events)
 {
     std::vector<double> latencies, confidences;
@@ -396,6 +508,39 @@ int commandScore(const Arguments& arguments)
         scoreApplied(session, reference, events, target.applied);
     }
     return 0;
+}
+
+// what the driver applies, with its settings changed from the command line (to try other values on the bench)
+spacecal::AppliedCalibration::Settings driverSettings(const Arguments& arguments)
+{
+    spacecal::AppliedCalibration::Settings settings;
+    settings.followSeconds = arguments.number("--follow", settings.followSeconds);
+    settings.turnRateScaleDeg = arguments.number("--turn-scale", settings.turnRateScaleDeg);
+    settings.disagreeTurnDeg = arguments.number("--disagree-turn", settings.disagreeTurnDeg);
+    settings.disagreeTurnFraction = arguments.number("--disagree-turn-fraction", settings.disagreeTurnFraction);
+    settings.disagreeMoveMeters = arguments.number("--disagree-move", settings.disagreeMoveMeters);
+    settings.disagreeMoveFraction = arguments.number("--disagree-move-fraction", settings.disagreeMoveFraction);
+    settings.agreeingMotionSeconds = arguments.number("--agreeing", settings.agreeingMotionSeconds);
+    settings.motionBaselineSeconds = arguments.number("--baseline", settings.motionBaselineSeconds);
+    settings.catchUpMeters = arguments.number("--catch-up", settings.catchUpMeters);
+    settings.catchUpAfterSeconds = arguments.number("--catch-up-after", settings.catchUpAfterSeconds);
+    settings.catchUpRate = arguments.number("--catch-up-rate", settings.catchUpRate);
+    settings.caughtUpMeters = arguments.number("--caught-up", settings.caughtUpMeters);
+    settings.brokenFactor = arguments.number("--broken", settings.brokenFactor);
+    if (arguments.get("--no-hold")) {
+        settings.disagreeTurnDeg = 1e9;
+        settings.disagreeMoveMeters = 1e9;
+        settings.stoppedTurnDeg = -1.0;
+    }
+    return settings;
+}
+
+void printDriverStatus(const DriverReplayResult& result)
+{
+    if (result.relativeSeconds > 0.0) {
+        std::printf("  under relative calibration for %.0f s: the two devices' motions disagreed (no pair counted) for %.1f s (%.1f%%), caught up %zu times for %.1f s in all\n",
+            result.relativeSeconds, result.holdingSeconds, 100.0 * result.holdingSeconds / result.relativeSeconds, result.catchUps, result.catchingUpSeconds);
+    }
 }
 
 // The driver's own relative calibration run over the recording with the calibrations the overlay set live. A recording made by
@@ -437,7 +582,7 @@ int commandDriver(const Arguments& arguments)
         }
     }
 
-    const DriverReplayResult result = replayDriver(session, events, probes);
+    const DriverReplayResult result = replayDriver(session, events, probes, driverSettings(arguments));
 
     std::printf("the driver's relative calibration over the recording, with %s:\n", arguments.get("--reference-mount") ? "the hindsight mount throughout" : "the calibrations the overlay set live");
     for (size_t i = 0; i < probes.size(); i++) {
@@ -451,10 +596,24 @@ int commandDriver(const Arguments& arguments)
     }
     std::printf("what this code applies (%zu readings):\n", result.applied.size());
     scoreApplied(session, reference, events, result.applied);
+    printDriverStatus(result);
     if (!target.applied.empty()) {
         std::printf("what the recorded driver applied (%zu readings):\n", target.applied.size());
         scoreApplied(session, reference, events, target.applied);
         printLatency(target.latency);
+    }
+    if (const char* file = arguments.get("--trace")) {
+        // what it applied at every pose of the reference, its error at the feet and what it was doing, for a closer look
+        std::ofstream out(file);
+        for (const AppliedSample& sample : result.series) {
+            out << sample.time << " " << reference.feetError(sample.time, sample.calibration) << " " << sample.status.holding << " " << sample.status.catchingUp << " " << sample.status.lastWeight << " " << sample.status.meanDifference << " " << sample.calibration.q.w() << " " << sample.calibration.q.x() << " " << sample.calibration.q.y() << " " << sample.calibration.q.z() << " " << sample.calibration.p.x() << " " << sample.calibration.p.y() << " " << sample.calibration.p.z() << " " << sample.target.x() << " " << sample.target.y() << " " << sample.target.z() << "\n";
+        }
+    }
+    std::printf("how still it held:\n");
+    scoreStillness("this code, at every pose of the reference", session, reference, result.series);
+    scoreStillness("this code, ten times a second", session, reference, samplesOf(session, result.applied));
+    if (!target.applied.empty()) {
+        scoreStillness("the recorded driver, ten times a second", session, reference, samplesOf(session, target.applied));
     }
     return 0;
 }
@@ -579,11 +738,13 @@ int commandReplay(const Arguments& arguments)
     }
     scoreEvents(session, reference, result.events, arguments.get("--each") != nullptr || result.events.size() <= 40);
 
-    if (arguments.get("--driver") != nullptr && options.relative) {
-        // and the driver's own relative calibration over the same poses, with what the overlay's code just set
-        const DriverReplayResult driver = replayDriver(session, result.events);
+    if (arguments.get("--driver") != nullptr) {
+        // and what the driver applies of it over the same poses, with what the overlay's code just set
+        const DriverReplayResult driver = replayDriver(session, result.events, {}, driverSettings(arguments));
         std::printf("what the driver applies of it (%zu readings):\n", driver.applied.size());
         scoreApplied(session, reference, result.events, driver.applied);
+        printDriverStatus(driver);
+        scoreStillness("how still it held, at every pose of the reference", session, reference, driver.series);
     }
     return 0;
 }
@@ -823,6 +984,7 @@ int commandSimulate(const Arguments& arguments)
     return 0;
 }
 
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -869,7 +1031,8 @@ int main(int argc, char** argv)
 
     std::fprintf(stderr,
         "usage: spacecal-bench info|reference|score|check|driver RECORDING [--reference N --target N] [--window S] [--feet M] [--pose-time]\n"
-        "       spacecal-bench replay RECORDING [--relative 0|1] [--samples 100|250|500] [--each] [--log]\n"
+        "       spacecal-bench replay RECORDING [--relative 0|1] [--samples 100|250|500] [--each] [--log] [--driver]\n"
+        "       spacecal-bench driver RECORDING [--reference-mount] [--follow S] [--turn-scale DEG] [--catch-up M] [--trace FILE]\n"
         "       spacecal-bench simulate RECORDING [--duration S] [--seed N] [--target-latency MS] [--reference-latency MS] [--jump S] [--frame-step S] [--reference-frame-step S] [--drift MM]\n");
     return 2;
 }
