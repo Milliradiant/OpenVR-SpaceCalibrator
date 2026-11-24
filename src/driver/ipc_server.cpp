@@ -121,20 +121,6 @@ protocol::Command_SetDeviceTransform_t Server::GetTransform(vr::TrackedDeviceInd
     return last;
 }
 
-bool Server::GetTransformIfChanged(vr::TrackedDeviceIndex_t unWhichDevice, uint32_t& sequence, protocol::Command_SetDeviceTransform_t& transform) const
-{
-    if (unWhichDevice >= vr::k_unMaxTrackedDeviceCount) {
-        return false;
-    }
-    const protocol::SharedSlot_t<protocol::Command_SetDeviceTransform_t>& slot = m_state.load(std::memory_order_acquire)->transforms[unWhichDevice];
-    const uint32_t current = protocol::shared::loadSequence(slot.sequence, std::memory_order_relaxed);
-    if (current == sequence || !protocol::loadSlot(slot, transform)) {
-        return false;
-    }
-    sequence = current;
-    return true;
-}
-
 void Server::UpdateHmdMetadata(const protocol::SharedData_HmdMetadata& metadata)
 {
     protocol::storeSlot(m_state.load(std::memory_order_acquire)->hmdMetadata, metadata);

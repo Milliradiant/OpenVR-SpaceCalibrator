@@ -21,8 +21,6 @@ vr::EVRInitError ServerTrackedDeviceProvider::Init(vr::IVRDriverContext* pDriver
 
     LOG_OPENVR_INFO("Starting SpaceCalibrator-Nova. Compiled against OpenVR driver API {}.{}.{}", vr::k_nSteamVRVersionMajor, vr::k_nSteamVRVersionMinor, vr::k_nSteamVRVersionBuild);
 
-    m_sessionRecorder.start(util::getSpaceCalibratorConfigDir() / "recordings");
-
     m_ipcServer.Connect(this);
     hooking::InjectHooks(this, pDriverContext);
 
@@ -35,7 +33,6 @@ void ServerTrackedDeviceProvider::Cleanup()
 
     hooking::DisableHooks();
     m_ipcServer.Shutdown();
-    m_sessionRecorder.stop();
     VR_CLEANUP_SERVER_DRIVER_CONTEXT();
 }
 
@@ -64,11 +61,6 @@ void ServerTrackedDeviceProvider::RunFrame()
             m_ipcServer.UpdatePose(i, corrected);
         }
     }
-
-    for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
-        m_ipcServer.GetTransformIfChanged(i, m_frameTransformSequences[i], m_frameTransforms[i]);
-    }
-    m_sessionRecorder.onFrame(m_frameTransforms, displayFrequency);
 }
 bool ServerTrackedDeviceProvider::ShouldBlockStandbyMode()
 {
@@ -125,9 +117,6 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
     if (!IsDeviceIndexValid(unWhichDevice))
         return true;
 
-    // the pose as the tracking driver gave it, before anything below changes it
-    m_sessionRecorder.onPose(unWhichDevice, newPose);
-
     m_ipcServer.UpdatePose(unWhichDevice, newPose);
 
     const ipc::protocol::Command_SetDeviceTransform_t transform = m_ipcServer.GetTransform(unWhichDevice);
@@ -177,7 +166,6 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(vr::TrackedDeviceIndex
     HandleQuirks(transform.quirks, newPose);
     Pose_t calibration;
     if (applied && applied->current(nowSeconds, calibration)) {
-        m_sessionRecorder.onApplied(unWhichDevice, calibration.rot, calibration.pos);
         applyCalibrationToPose(newPose, hmdQuatFromEigen(calibration.rot), hmdVecFromEigenVec(calibration.pos), transform.scale, transform.calibrateMotionVecs());
     } else if (!transform.relativeCoordSystem()) {
         // classic world-space application

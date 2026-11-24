@@ -48,7 +48,7 @@ private:
     // when nothing in use is drawn, the loop wakes this long after the calibration's tick is due. a tick has come at the first
     // turn of the loop 50 ms after the last, which with the loop turning every 11 ms or so made them some 57 ms apart (in the
     // logs of 18 Nov: a batch every 2.85 s at the least, 50 samples): waking 7 ms late keeps them there, where waking at once
-    // would make the batches of samples shorter in time (on the bench a little worse, at 51.5 ms apart)
+    // would make the batches of samples shorter in time
     static constexpr double k_TICK_WAKE_MARGIN_SEC = 0.007;
 };
 }

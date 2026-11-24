@@ -22,8 +22,6 @@ public:
     bool GetPose(vr::TrackedDeviceIndex_t unWhichDevice, vr::DriverPose_t& pose) const;
     // what the overlay has the driver do with the device (disabled until it says otherwise). any thread
     protocol::Command_SetDeviceTransform_t GetTransform(vr::TrackedDeviceIndex_t unWhichDevice) const;
-    // the same, read only if the overlay has written it since `sequence`, which it then moves on. for one thread's own copy
-    bool GetTransformIfChanged(vr::TrackedDeviceIndex_t unWhichDevice, uint32_t& sequence, protocol::Command_SetDeviceTransform_t& transform) const;
     // the headset's metadata, for the overlay
     void UpdateHmdMetadata(const protocol::SharedData_HmdMetadata& metadata);
 

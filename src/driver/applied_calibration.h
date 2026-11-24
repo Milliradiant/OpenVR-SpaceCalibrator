@@ -61,21 +61,10 @@ struct AppliedCalibrationSettings {
 // at the feet and up to 11), and to one well away from what is applied, at the catch-up's rate.
 //
 // One of these serves one calibration, whichever devices it is applied to, and is safe to call from the drivers' threads. The
-// time is handed in, so that the calibration's bench runs it over a recorded session exactly as the driver does
-// (bench/src/replay_driver.cpp).
+// time is handed in.
 class AppliedCalibration {
 public:
     using Settings = AppliedCalibrationSettings;
-
-    // what it is doing, for the bench
-    struct Status {
-        bool hasCalibration = false;
-        bool relative = false;
-        bool holding = false; // the two devices' motions disagreed: no pair counts until they agree again
-        bool catchingUp = false;
-        double lastWeight = 0.0; // how much the last pair counted
-        double meanDifference = 0.0; // between the pairs and what is applied, at the feet
-    };
 
     explicit AppliedCalibration(const Settings& settings = {})
         : m_settings(settings)
@@ -100,8 +89,6 @@ public:
 
     // the calibration ended: the next one begins from its own first calibration
     void reset();
-
-    [[nodiscard]] Status status() const;
 
 private:
     struct Pair {
@@ -154,7 +141,6 @@ private:
     double m_differingSeconds = 0.0;
     double m_meanDifference = 0.0; // between the pairs and what is applied, at the feet, by how much each pair counts
     bool m_catchingUp = false;
-    double m_lastWeight = 0.0;
 };
 
 } // namespace spacecal

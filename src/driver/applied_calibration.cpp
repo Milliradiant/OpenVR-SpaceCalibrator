@@ -230,7 +230,6 @@ void AppliedCalibration::addPair(double now, const vr::DriverPose_t& reference, 
     if (m_holding) {
         weight = 0.0;
     }
-    m_lastWeight = weight;
     m_pairs[m_pairNext] = pair;
     m_pairNext = (m_pairNext + 1) % k_PAIRS;
     m_pairCount = std::min(m_pairCount + 1, k_PAIRS);
@@ -332,20 +331,6 @@ void AppliedCalibration::reset()
     m_pairCount = 0;
     m_holding = false;
     m_catchingUp = false;
-    m_lastWeight = 0.0;
-}
-
-AppliedCalibration::Status AppliedCalibration::status() const
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return Status {
-        .hasCalibration = m_hasCalibration,
-        .relative = m_relative,
-        .holding = m_holding,
-        .catchingUp = m_catchingUp,
-        .lastWeight = m_lastWeight,
-        .meanDifference = m_meanDifference,
-    };
 }
 
 } // namespace spacecal

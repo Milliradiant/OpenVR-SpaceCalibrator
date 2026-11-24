@@ -1,7 +1,5 @@
 {
 	"driver_01spacecalibrator": {
-		"loadPriority": 9999,
-		"recordPoses": true,
-		"recordingsMaxMB": 1024
+		"loadPriority": 9999
 	}
 }

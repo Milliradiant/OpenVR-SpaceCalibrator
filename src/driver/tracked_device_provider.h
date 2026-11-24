@@ -2,7 +2,6 @@
 
 #include "ipc_server.h"
 #include "applied_calibration.h"
-#include "session_recorder.h"
 #include <Eigen/Geometry>
 #include <chrono>
 #include <openvr_driver.h>
@@ -48,12 +47,8 @@ private:
     double m_fVsyncPredictionTime = 0.0;
     ipc::protocol::SharedData_HmdMetadata m_hmdMetaData = {};
 
-    // RunFrame's own copy of the transforms the overlay set, for the recorder, and the sequence each was read at
-    ipc::protocol::Command_SetDeviceTransform_t m_frameTransforms[vr::k_unMaxTrackedDeviceCount] = {};
-    uint32_t m_frameTransformSequences[vr::k_unMaxTrackedDeviceCount] = {};
     // what is applied for each continuous calibration, by the calibration's own target device
     AppliedCalibration m_appliedCalibrations[vr::k_unMaxTrackedDeviceCount];
-    SessionRecorder m_sessionRecorder;
     friend class ipc::Server;
 };
 }
