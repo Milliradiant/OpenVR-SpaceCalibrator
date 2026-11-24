@@ -314,7 +314,7 @@ private:
 
     void updateMountEstimate(double currentTime);
     // the estimator's mount is good enough to be the relative calibration in force
-    [[nodiscard]] bool isMountSettled() const { return useMountEstimate && mountEstimator.ready() && mountEstimator.weight() >= k_MOUNT_MIN_MOTIONS_IN_FORCE; }
+    [[nodiscard]] bool isMountSettled() const { return useMountEstimate && mountEstimator.settled(k_MOUNT_MIN_MOTIONS_IN_FORCE); }
     std::deque<Sample_t> m_mountSamples; // the last moments' poses of the two devices, to take motions between
     bool m_isMountInForce = false; // the calibration in force is the estimator's mount
     bool m_isMountUnsaved = false;

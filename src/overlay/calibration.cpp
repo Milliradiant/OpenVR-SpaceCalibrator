@@ -356,7 +356,10 @@ CalibrationError TrackingSystemCalibration::computeCalibrationOneshot(double cur
     // @TODO: calibration metrics
     auto endTime = std::chrono::high_resolution_clock::now();
     double elapsedMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-    bool bApplied = bIsInStoredSpace && (eCalibrationError == CalibrationError::None || bForceCalibration);
+    // forcing a calibration skips the checks that compare it with the one before, not those that say it could not be found: with too
+    // little turning in the samples the rotation is noise, and a fit metres off its own samples is no calibration
+    const bool bUnusable = eCalibrationError == CalibrationError::LackOfRotationalVariance || eCalibrationError == CalibrationError::RmsErrorTooHigh;
+    bool bApplied = bIsInStoredSpace && (eCalibrationError == CalibrationError::None || (bForceCalibration && !bUnusable));
 
     errorMetrics.rmsError.push(currentTime, k_METRIC_HISTORY_TIMESPAN, rmsError);
     errorMetrics.axisIndependence.push(currentTime, k_METRIC_HISTORY_TIMESPAN, axisVariance);
@@ -388,7 +391,7 @@ CalibrationError TrackingSystemCalibration::computeCalibrationOneshot(double cur
     } else {
         // @TODO: propagate rejection reason to UI to provide user with feedback on how to improve calibration
         std::string calibErrString = getCalibrationErrorMapping(eCalibrationError).szLogString;
-        LOG_CALIB_WARN("Rejecting calibration due to {}; RMS: {}", calibErrString, rmsError);
+        LOG_CALIB_WARN("Rejecting calibration due to {}; RMS: {}{}", calibErrString, rmsError, bForceCalibration ? " (not applied although forced: turn the headset about more while it calibrates)" : "");
     }
 
     return eCalibrationError;
@@ -772,6 +775,9 @@ void TrackingSystemCalibration::updateMountEstimate(const double currentTime)
             m_isMountUnsaved = m_isMountUnsaved || added == MountEstimator::Added::Taken;
             if (added == MountEstimator::Added::StartedOver) {
                 LOG_CALIB_WARN("The target device no longer moves with the reference device the way its mount had it (was it moved on the reference?): finding the mount anew");
+                m_isMountUnsaved = true;
+            } else if (added == MountEstimator::Added::Remounted) {
+                LOG_CALIB_WARN("The target device sits a little differently on the reference device than its mount had it (was it bumped?): the mount is now the latest motions'");
                 m_isMountUnsaved = true;
             }
         }
